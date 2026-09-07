@@ -887,7 +887,7 @@ else:
 
 # ── Botón de actualización ────────────────────────────────────────────────────
 st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
-if st.button("Actualizar datos", type="primary", width="stretch"):
+if st.button("Actualizar datos", type="primary", use_container_width=True):
     log_box = st.container()
     def log_msg(msg):
         log_box.markdown(f"""
