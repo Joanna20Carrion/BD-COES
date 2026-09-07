@@ -30,14 +30,22 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # En producción (Streamlit Cloud) se leen desde st.secrets
 def _pg_config() -> dict:
     try:
-        pwd = st.secrets["supabase"]["password"]
+        pwd  = st.secrets["supabase"]["password"]
+        host = st.secrets["supabase"].get("host", "db.pnidiixppefxfiqwzvwz.supabase.co")
+        port = int(st.secrets["supabase"].get("port", 5432))
     except Exception:
-        pwd = "MoJo_JoJo26#@"   # fallback local
+        pwd  = "MoJo_JoJo26#@"   # fallback local
+        host = "db.pnidiixppefxfiqwzvwz.supabase.co"
+        port = 5432
+    try:
+        usr = st.secrets["supabase"].get("user", "postgres.pnidiixppefxfiqwzvwz")
+    except Exception:
+        usr = "postgres"
     return dict(
-        host     = "db.pnidiixppefxfiqwzvwz.supabase.co",
-        port     = 5432,
+        host     = host,
+        port     = port,
         dbname   = "postgres",
-        user     = "postgres",
+        user     = usr,
         password = pwd,
         sslmode  = "require",
     )
