@@ -1,3 +1,4 @@
+from __future__ import annotations
 import io
 import zipfile
 import tempfile
@@ -29,23 +30,27 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Credenciales Supabase
 # En producción (Streamlit Cloud) se leen desde st.secrets
 def _pg_config() -> dict:
-    try:
-        pwd  = st.secrets["supabase"]["password"]
-        host = st.secrets["supabase"].get("host", "db.pnidiixppefxfiqwzvwz.supabase.co")
-        port = int(st.secrets["supabase"].get("port", 5432))
-    except Exception:
-        pwd  = "MoJo_JoJo26#@"   # fallback local
-        host = "db.pnidiixppefxfiqwzvwz.supabase.co"
+    """
+    Credenciales SOLO desde st.secrets (nunca en el código).
+    En Streamlit Cloud: Settings → Secrets. En local: .streamlit/secrets.toml
+        [supabase]
+        password = "..."
+        host = "aws-0-us-east-2.pooler.supabase.com"
         port = 5432
+        user = "postgres.pnidiixppefxfiqwzvwz"
+    """
     try:
-        usr = st.secrets["supabase"].get("user", "postgres.pnidiixppefxfiqwzvwz")
+        cfg = st.secrets["supabase"]
+        pwd = cfg["password"]
     except Exception:
-        usr = "postgres"
+        st.error("Falta la contraseña de Supabase en los *secrets* de la app "
+                 "(sección [supabase], clave password).")
+        st.stop()
     return dict(
-        host     = host,
-        port     = port,
+        host     = cfg.get("host", "aws-0-us-east-2.pooler.supabase.com"),
+        port     = int(cfg.get("port", 5432)),
         dbname   = "postgres",
-        user     = usr,
+        user     = cfg.get("user", "postgres.pnidiixppefxfiqwzvwz"),
         password = pwd,
         sslmode  = "require",
     )
@@ -253,10 +258,9 @@ def _max_fecha_pg(tabla: str):
 
 def _insertar_df_pg(df: pd.DataFrame, tabla: str, con) -> int:
     """
-    Para cada fecha del df:
-      - Si ya existe en la tabla → borra esas filas y las reinserta (refresco)
-      - Si no existe             → inserta directamente
-    Así el último día guardado siempre queda completo aunque antes estuviera desfasado.
+    Reemplaza por día: borra las filas de las fechas del df y las vuelve a insertar.
+    Así el último día guardado siempre queda completo (p. ej. si salió un RDO nuevo)
+    y no quedan filas viejas. Todo en una transacción: si algo falla, no se borra nada.
     Retorna el número de filas insertadas.
     """
     if df is None or df.empty:
@@ -264,33 +268,22 @@ def _insertar_df_pg(df: pd.DataFrame, tabla: str, con) -> int:
     df = df.copy()
     if "Fecha" in df.columns:
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
-
-    cur = con.cursor()
-    try:
-        # Borrar filas de las fechas que vamos a (re)insertar
-        fechas_a_insertar = tuple(df["Fecha"].dropna().unique().tolist())
-        if fechas_a_insertar:
-            cur.execute(
-                f'DELETE FROM "{tabla}" WHERE "Fecha" = ANY(%s)',
-                (list(fechas_a_insertar),)
-            )
-    except Exception:
-        pass  # tabla no existe aún → insertar todo sin borrar
-
-    if df.empty:
-        return 0
-
-    # Reemplazar NaN con None para que psycopg2 lo convierta a NULL
-    df = df.where(pd.notnull(df), None)
+    df = df.astype(object).where(pd.notnull(df), None)    # NaN → NULL
 
     cols = list(df.columns)
-    cols_quoted = [f'"{c}"' for c in cols]
-    placeholders = ", ".join(["%s"] * len(cols))
-    sql = f'INSERT INTO "{tabla}" ({", ".join(cols_quoted)}) VALUES ({placeholders})'
-
-    rows = [tuple(r) for r in df.itertuples(index=False)]
-    psycopg2.extras.execute_batch(cur, sql, rows, page_size=500)
-    con.commit()
+    cols_sql = ", ".join('"' + c + '"' for c in cols)
+    sql_ins = f'INSERT INTO "{tabla}" ({cols_sql}) VALUES %s'
+    fechas = sorted(df["Fecha"].dropna().unique().tolist())
+    cur = con.cursor()
+    try:
+        if fechas:
+            cur.execute(f'DELETE FROM "{tabla}" WHERE "Fecha" = ANY(%s)', (fechas,))
+        rows = [tuple(r) for r in df.itertuples(index=False)]
+        psycopg2.extras.execute_values(cur, sql_ins, rows, page_size=2000)
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
     return len(df)
 
 
@@ -704,6 +697,464 @@ def tab3_procesar_rango(fecha_inicio, fecha_fin, log):
     return pd.concat(tablas, ignore_index=True) if tablas else pd.DataFrame()
 
 
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 4 — CMG PROGRAMADO (PDO + RDO)  →  tabla CMG_RDO
+# ════════════════════════════════════════════════════════════════════════════════
+# Sale del mismo ZIP de YUPANA que ya se descarga para DEMANDA y GENERACION
+# (archivo "CMg - Barra ($ por MWh).csv"), así que no se baja nada extra.
+
+CMG_SHEET   = "CMG_RDO"
+ARCHIVO_CMG = "CMg - Barra ($ por MWh).csv"
+BARRAS_CMG  = ["SANTA ROSA 220 A", "MOQUEGUA 220", "ZORRITOS 220"]
+
+
+def _norm_barra(txt) -> str:
+    import re as _re, unicodedata as _ud
+    s = _ud.normalize("NFKD", str(txt)).encode("ASCII", "ignore").decode()
+    return _re.sub(r"\s+", " ", s).strip().upper()
+
+
+def _cmg_hora(p: int) -> str:
+    m = p * 30
+    return "00:00" if m >= 1440 else f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _cmg_largo(df, fecha_d: str, serie: str) -> list:
+    """CSV ancho (una columna por barra) → filas. ETAPA 1..n = últimas n medias horas."""
+    if df is None or df.empty:
+        return []
+    buscadas = {_norm_barra(b) for b in BARRAS_CMG}
+    cols = [c for c in df.columns[1:] if _norm_barra(c) in buscadas]
+    df = df.tail(48).reset_index(drop=True)
+    n = len(df)
+    filas = []
+    for c in cols:
+        barra = " ".join(str(c).split())
+        vals = pd.to_numeric(df[c], errors="coerce").tolist()
+        for k, v in enumerate(vals):
+            p = 48 - n + 1 + k
+            filas.append({"Fecha": fecha_d, "Serie": serie, "Periodo": p, "Hora": _cmg_hora(p),
+                          "Barra": barra, "CMG": None if pd.isna(v) else round(float(v), 4)})
+    return filas
+
+
+def tab4_procesar_fecha(fecha_dt) -> pd.DataFrame:
+    fecha_d = str(fecha_dt.date())
+    filas = []
+    filas += _cmg_largo(_csv_zip(fecha_dt, "PDO", None, ARCHIVO_CMG), fecha_d, "PDO")
+    for letra in RDO_LETRAS_GENERACION:
+        df = _csv_zip(fecha_dt, "RDO", letra, ARCHIVO_CMG)
+        if df is None:
+            break                       # no hay más RDO ese día
+        filas += _cmg_largo(df, fecha_d, f"RDO {letra}")
+    return pd.DataFrame(filas, columns=["Fecha", "Serie", "Periodo", "Hora", "Barra", "CMG"])
+
+
+def tab4_procesar_rango(fecha_inicio, fecha_fin, log):
+    fechas = pd.date_range(fecha_inicio, fecha_fin, freq="D")
+    log.write(f"CMG RDO — {fecha_inicio.date()} → {fecha_fin.date()} ({len(fechas)} días)")
+    prog = st.progress(0)
+    tablas = []
+    for i, fdt in enumerate(fechas, 1):
+        prog.progress(i / len(fechas))
+        df_f = tab4_procesar_fecha(fdt)
+        if not df_f.empty:
+            tablas.append(df_f)
+    prog.empty()
+    return pd.concat(tablas, ignore_index=True) if tablas else pd.DataFrame()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TABS 5 y 6 — IEOD EJECUTADO  →  tablas IEOD_TIPO_RECURSO e IEOD_G_AREAS
+# ════════════════════════════════════════════════════════════════════════════════
+# Archivo AnexoA_ddmm.xlsx del IEOD (sale al día siguiente). Se leen dos hojas
+# en la misma descarga:
+#   TIPO_RECURSO → generación por tipo de recurso / combustible  (tab 5 y 6)
+#   G_AREAS      → generación por área Norte/Centro/Sur          (tab 6: eólica N/C)
+# La vista HISTORICO_RECURSO de Supabase (IEOD o, si no hay, PDO+RDO) se
+# actualiza sola a partir de estas tablas y de GENERACION_RDO.
+#
+# Las funciones de lectura son las mismas del script ieod_tipo_recurso.py:
+# reconocen columnas por palabra clave (con/sin tildes, "+", "&"), aguantan
+# encabezados vacíos, columnas repetidas y columnas nuevas.
+
+IEOD_TIPO_SHEET  = "IEOD_TIPO_RECURSO"
+IEOD_AREAS_SHEET = "IEOD_G_AREAS"
+IEOD_TOLERANCIA_TOTAL_MW = 1.0
+
+_BASE_IEOD = (
+    "https://www.coes.org.pe/portal/browser/download?"
+    "url=Post%20Operaci%C3%B3n%2FReportes%2FIEOD%2F"
+    "{y}%2F{m}_{M}%2F{d}%2FAnexoA_{d}{m}.xlsx"
+)
+
+def _url_ieod(fecha):
+    y, m, d = fecha.year, f"{fecha.month:02d}", f"{fecha.day:02d}"
+    return _BASE_IEOD.format(y=y, m=m, M=_mes(fecha.month), d=d)
+
+from datetime import date, datetime, time as dtime   # usados por las funciones IEOD
+import re
+import unicodedata
+
+IEOD_HOJA_TIPO = "TIPO_RECURSO"
+
+IEOD_HOJA_AREAS = "G_AREAS"
+
+REGLAS = [
+    (["PASADA"],                "H. PASADA",                   "HIDRO"),
+    (["REGULACION"],            "H. REGULACION",               "HIDRO"),
+    (["CAMISEA"],               "GAS DE CAMISEA",              "TERMICA"),
+    (["MALACAS"],               "GAS DE MALACAS",              "TERMICA"),
+    (["AGUAYTIA"],              "GAS DE AGUAYTIA",             "TERMICA"),
+    (["NAFTA", "FLEXIGAS"],     "NAFTA Y FLEXIGAS",            "TERMICA"),   # columna combinada
+    (["NAFTA"],                 "NAFTA Y GAS DE REFINERIA",    "TERMICA"),
+    (["FLEXIGAS"],              "FLEXIGAS Y GAS DE REFINERIA", "TERMICA"),
+    (["RESIDUAL"],              "RESIDUAL",                    "TERMICA"),
+    (["DIESEL"],                "DIESEL",                      "TERMICA"),
+    (["BAGA"],                  "BAGAZO",                      "TERMICA"),   # BAGAZO / BAGASO
+    (["BIOGAS"],                "BIOGAS",                      "TERMICA"),
+    (["CARBON"],                "CARBON",                      "TERMICA"),
+    (["SOLAR"],                 "SOLAR",                       "SOLAR"),
+    (["EOLICA"],                "EOLICA",                      "EOLICA"),
+    (["TOTAL"],                 "TOTAL",                       "DEMANDA"),
+]
+
+PALABRAS_TERMICAS = ["GAS", "PETROLEO", "CARBON", "DIESEL", "RESIDUAL", "BIOMASA", "COMBUST"]
+
+COLUMNAS_TIPO = ["Fecha", "Periodo", "Hora", "Columna", "Grupo", "MW", "Columna_IEOD"]
+
+COLUMNAS_AREAS = ["Fecha", "Periodo", "Hora", "Bloque", "Area", "Tipo", "Columna", "MW", "Columna_IEOD"]
+
+columnas_nuevas_vistas: dict[str, str] = {}
+
+def limpiar(txt) -> str:
+    """Quita tildes, saltos de línea y espacios dobles; pasa a mayúsculas."""
+    s = unicodedata.normalize("NFKD", str(txt)).encode("ASCII", "ignore").decode()
+    s = s.replace("&", " Y ").replace("+", " Y ")
+    return re.sub(r"\s+", " ", s).strip().upper()
+
+def reconocer(encabezado: str) -> tuple[str, str]:
+    """Devuelve (nombre unificado, grupo) para un encabezado del IEOD."""
+    t = limpiar(encabezado)
+    palabras = set(re.findall(r"[A-Z0-9]+", t))
+    for claves, nombre, grupo in REGLAS:
+        if all(any(p.startswith(c) for p in palabras) for c in claves):
+            return nombre, grupo
+    grupo = "TERMICA" if any(k in t for k in PALABRAS_TERMICAS) else "OTRO"
+    return t, grupo
+
+def a_hora(valor) -> str | None:
+    """Convierte la celda de hora ('00:30', time, datetime, 0.0208…) a 'HH:MM'."""
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return None
+    if isinstance(valor, (datetime, pd.Timestamp)):
+        valor = valor.time()
+    if isinstance(valor, dtime):
+        return f"{valor.hour:02d}:{valor.minute:02d}"
+    if isinstance(valor, (int, float)) and 0 <= valor <= 1:          # fracción de día de Excel
+        minutos = round(valor * 1440)
+        return f"{(minutos // 60) % 24:02d}:{minutos % 60:02d}"
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})", str(valor))
+    return f"{int(m.group(1)):02d}:{m.group(2)}" if m else None
+
+def periodo_de_hora(h: str) -> int:
+    hh, mm = map(int, h.split(":"))
+    minutos = hh * 60 + mm
+    if minutos == 0 or (hh == 23 and mm == 59):
+        return 48
+    return round(minutos / 30)
+
+def hora_de_periodo(p: int) -> str:
+    minutos = p * 30
+    return "00:00" if minutos >= 1440 else f"{minutos // 60:02d}:{minutos % 60:02d}"
+
+def leer_tipo_recurso(xls: pd.ExcelFile, f: date) -> tuple[pd.DataFrame | None, list[str]]:
+    """Hoja TIPO_RECURSO. Devuelve (filas en formato largo, avisos)."""
+    avisos: list[str] = []
+    hoja = next((h for h in xls.sheet_names if limpiar(h) == IEOD_HOJA_TIPO), None)
+    if hoja is None:
+        return None, [f"no tiene la hoja {IEOD_HOJA_TIPO}"]
+    raw = pd.read_excel(xls, sheet_name=hoja, header=None)
+
+    # 1) Fila de encabezados: la primera que tenga una celda "HORA"
+    fila_hdr = col_hora = None
+    for i in range(min(40, len(raw))):
+        for j, v in enumerate(raw.iloc[i].tolist()):
+            if limpiar(v) == "HORA":
+                fila_hdr, col_hora = i, j
+                break
+        if fila_hdr is not None:
+            break
+    if fila_hdr is None:
+        return None, ["no se encontró la fila de encabezados (HORA)"]
+
+    # 2) Filas de datos: debajo del encabezado, las que tienen una hora válida
+    filas = []
+    for i in range(fila_hdr + 1, min(fila_hdr + 80, len(raw))):
+        h = a_hora(raw.iat[i, col_hora])
+        if h is None:
+            if filas:                       # se terminó el bloque (TOTAL MWh, %, …)
+                break
+            continue
+        filas.append((i, periodo_de_hora(h)))
+    if len(filas) != 48:
+        avisos.append(f"tiene {len(filas)} medias horas (se esperaban 48)")
+
+    def vacio(v) -> bool:
+        return v is None or (isinstance(v, float) and pd.isna(v)) or not str(v).strip()
+
+    def tiene_datos(j: int) -> bool:
+        return any(not pd.isna(pd.to_numeric(raw.iat[i, j], errors="coerce")) for i, _ in filas)
+
+    # 3) Columnas de datos: desde HORA hasta la columna TOTAL (incluida).
+    #    A la derecha hay otra tabla (EMPRESA/CENTRAL) que no se toma.
+    #    El COES a veces deja encabezados vacíos en medio, por eso NO se corta
+    #    en el primer vacío: se recorre hasta TOTAL.
+    j_total = None
+    for j in range(col_hora + 1, raw.shape[1]):
+        t = limpiar(raw.iat[fila_hdr, j])
+        if t in ("EMPRESA", "CENTRAL"):
+            break
+        if t == "TOTAL" or t.startswith("TOTAL "):
+            j_total = j
+            break
+    if j_total is None:
+        # sin TOTAL: se toma hasta EMPRESA o hasta 3 columnas seguidas totalmente vacías
+        avisos.append("no tiene columna TOTAL")
+        j_fin, vacias = col_hora, 0
+        for j in range(col_hora + 1, raw.shape[1]):
+            t = limpiar(raw.iat[fila_hdr, j])
+            if t in ("EMPRESA", "CENTRAL"):
+                break
+            if vacio(raw.iat[fila_hdr, j]) and not tiene_datos(j):
+                vacias += 1
+                if vacias >= 3:
+                    break
+                continue
+            vacias, j_fin = 0, j
+        j_total_rango = j_fin
+    else:
+        j_total_rango = j_total
+
+    cols: list[tuple[int, str]] = []
+    for j in range(col_hora + 1, j_total_rango + 1):
+        v = raw.iat[fila_hdr, j]
+        if vacio(v):
+            if tiene_datos(j):
+                nombre_col = f"SIN ENCABEZADO (col {j + 1})"
+                cols.append((j, nombre_col))
+                avisos.append(f"la columna {j + 1} tiene datos pero no tiene nombre → '{nombre_col}' (grupo OTRO)")
+            continue                         # encabezado vacío y sin datos: se ignora
+        cols.append((j, re.sub(r"\s+", " ", str(v)).strip()))
+    if not cols:
+        return None, ["no se encontraron columnas de datos"]
+
+    registros = []
+    usados: dict[str, int] = {}
+    for j, encabezado in cols:
+        if encabezado.startswith("SIN ENCABEZADO"):
+            nombre, grupo = encabezado, "OTRO"
+        else:
+            nombre, grupo = reconocer(encabezado)
+            if grupo == "OTRO" or nombre not in {r[1] for r in REGLAS}:
+                if nombre not in columnas_nuevas_vistas:
+                    columnas_nuevas_vistas[nombre] = f"{f:%d/%m/%Y}"
+                    avisos.append(f"columna NUEVA '{encabezado}' → guardada como '{nombre}' (grupo {grupo})")
+        # Columna repetida el mismo día (p. ej. "DIESEL" dos veces): se guardan ambas
+        usados[nombre] = usados.get(nombre, 0) + 1
+        if usados[nombre] > 1:
+            nuevo = f"{nombre} ({usados[nombre]})"
+            avisos.append(f"columna repetida '{encabezado}' → guardada como '{nuevo}'")
+            nombre = nuevo
+        for i, p in filas:
+            mw = pd.to_numeric(raw.iat[i, j], errors="coerce")
+            registros.append((f.isoformat(), p, hora_de_periodo(p), nombre, grupo,
+                              None if pd.isna(mw) else round(float(mw), 4), encabezado))
+
+    df = pd.DataFrame(registros, columns=COLUMNAS_TIPO)
+
+    # 4) Control: suma de columnas vs TOTAL
+    if (df["Columna"] == "TOTAL").any():
+        piv = df.pivot_table(index="Periodo", columns="Columna", values="MW", aggfunc="sum").fillna(0)
+        dif = (piv.drop(columns="TOTAL").sum(axis=1) - piv["TOTAL"]).abs()
+        if dif.max() > IEOD_TOLERANCIA_TOTAL_MW:
+            p = int(dif.idxmax())
+            avisos.append(f"la suma de columnas no cuadra con TOTAL (hasta {dif.max():.1f} MW a las {hora_de_periodo(p)})")
+    else:
+        avisos.append("no tiene columna TOTAL")
+
+    return df, avisos
+
+def leer_g_areas(xls: pd.ExcelFile, f: date) -> tuple[pd.DataFrame | None, list[str]]:
+    """Hoja G_AREAS (generación por área y tipo). Devuelve (filas en formato largo, avisos)."""
+    avisos: list[str] = []
+    hoja = next((h for h in xls.sheet_names if limpiar(h) == IEOD_HOJA_AREAS), None)
+    if hoja is None:
+        return None, [f"no tiene la hoja {IEOD_HOJA_AREAS}"]
+    raw = pd.read_excel(xls, sheet_name=hoja, header=None)
+    n_filas, n_cols = raw.shape
+
+    def vacio(v) -> bool:
+        return v is None or (isinstance(v, float) and pd.isna(v)) or not str(v).strip()
+
+    # 1) Fila de encabezados: la que más celdas tiene con HIDRO/TERMO/SOLAR/EOLICA/TOTAL
+    claves = ("HIDRO", "TERMO", "SOLAR", "EOLICA", "TOTAL")
+    mejor, fila_hdr = 0, None
+    for i in range(min(30, n_filas)):
+        n = sum(any(k in limpiar(v) for k in claves) for v in raw.iloc[i].tolist() if not vacio(v))
+        if n > mejor:
+            mejor, fila_hdr = n, i
+    if fila_hdr is None or mejor < 3:
+        return None, ["no se encontró la fila de encabezados"]
+
+    # 2) Columna de HORA (la primera con horas válidas debajo del encabezado) y filas de datos
+    col_hora, filas = None, []
+    for j in range(n_cols):
+        cand = []
+        for i in range(fila_hdr + 1, min(fila_hdr + 80, n_filas)):
+            h = a_hora(raw.iat[i, j])
+            if h is None:
+                if cand:
+                    break
+                continue
+            cand.append((i, periodo_de_hora(h)))
+        if len(cand) >= 24:
+            col_hora, filas = j, cand
+            break
+    if col_hora is None:
+        return None, ["no se encontró la columna HORA"]
+    if len(filas) != 48:
+        avisos.append(f"tiene {len(filas)} medias horas (se esperaban 48)")
+
+    # 3) Rótulos de bloque/área de las filas de arriba (rellenados hacia la derecha
+    #    por si vienen como celdas combinadas)
+    def rotulos(i: int) -> list[str]:
+        out, ultimo = [], ""
+        for j in range(n_cols):
+            v = raw.iat[i, j] if 0 <= i < n_filas else None
+            if not vacio(v):
+                ultimo = limpiar(v)
+            if not vacio(v) and limpiar(v) == "HORA":
+                ultimo = ""
+            out.append(ultimo)
+        return out
+    rot1 = rotulos(fila_hdr - 1)     # NORTE / CENTRO / SUR / INTEGRANTES COES / ... RER
+    rot2 = rotulos(fila_hdr - 2)     # RESUMEN ... POR AREAS / GENERACION POR TIPO ...
+
+    registros, usados = [], {}
+    for j in range(col_hora + 1, n_cols):
+        enc = raw.iat[fila_hdr, j]
+        if vacio(enc):
+            continue                                    # columnas HORA intermedias, separadores
+        t = limpiar(enc)
+        if t == "HORA":
+            continue
+        contexto = f"{t} {rot1[j]} {rot2[j]}"
+        if "RER" in t or "RER" in rot1[j]:
+            bloque = "RER"
+        elif "AREA" in rot2[j]:
+            bloque = "AREAS"
+        else:
+            bloque = "TIPO"
+        palabras = t.split()      # por palabra completa: "GEOTERMICA" no debe pasar por "TERMICA"
+        if any(w.startswith("HIDRO") for w in palabras):
+            tipo = "HIDRO"
+        elif any(w.startswith("TERMO") or w in ("TERMICA", "TERMICAS") for w in palabras):
+            tipo = "TERMICA"
+        elif any(w.startswith("SOLAR") for w in palabras):
+            tipo = "SOLAR"
+        elif any(w.startswith("EOLIC") for w in palabras):
+            tipo = "EOLICA"
+        elif "TOTAL" in palabras or "GENERACION COES" in t:
+            tipo = "TOTAL"
+        else:
+            tipo = "OTRO"
+        area = next((a for a in ("NORTE", "CENTRO", "SUR") if a in t.split()), "SEIN")
+        nombre = f"{tipo} {area}"
+        if tipo == "OTRO":
+            nombre = t
+            clave_nueva = f"G_AREAS: {t}"
+            if clave_nueva not in columnas_nuevas_vistas:
+                columnas_nuevas_vistas[clave_nueva] = f"{f:%d/%m/%Y}"
+                avisos.append(f"columna NUEVA '{enc}' → guardada como '{t}' (bloque {bloque}, tipo OTRO)")
+        k = (bloque, nombre)
+        usados[k] = usados.get(k, 0) + 1
+        if usados[k] > 1:
+            avisos.append(f"columna repetida '{enc}' en bloque {bloque} → '{nombre} ({usados[k]})'")
+            nombre = f"{nombre} ({usados[k]})"
+        enc_txt = re.sub(r"\s+", " ", str(enc)).strip()
+        for i, p in filas:
+            mw = pd.to_numeric(raw.iat[i, j], errors="coerce")
+            registros.append((f.isoformat(), p, hora_de_periodo(p), bloque, area, tipo, nombre,
+                              None if pd.isna(mw) else round(float(mw), 4), enc_txt))
+
+    if not registros:
+        return None, avisos + ["no se encontraron columnas de datos"]
+    df = pd.DataFrame(registros, columns=COLUMNAS_AREAS)
+
+    # 4) Controles: en cada bloque, la suma de tipos debe dar el TOTAL SEIN
+    for bloque, sub in df.groupby("Bloque"):
+        tot = sub[sub["Columna"] == "TOTAL SEIN"]
+        if tot.empty:
+            continue
+        partes = sub[(sub["Tipo"] != "TOTAL") & (sub["Columna"] != "TOTAL SEIN")]
+        s1 = partes.groupby("Periodo")["MW"].sum()
+        s2 = tot.groupby("Periodo")["MW"].sum()
+        dif = (s1.reindex(s2.index, fill_value=0) - s2).abs()
+        if len(dif) and dif.max() > IEOD_TOLERANCIA_TOTAL_MW:
+            p = int(dif.idxmax())
+            avisos.append(f"bloque {bloque}: la suma no cuadra con TOTAL "
+                          f"(hasta {dif.max():.1f} MW a las {hora_de_periodo(p)})")
+    return df, avisos
+
+
+def tab56_procesar_fecha(fecha_dt):
+    """Devuelve (df_tipo, df_areas, avisos). None si el IEOD de ese día aún no existe."""
+    data = _get(_url_ieod(fecha_dt), timeout=90)
+    if not data or data[:4] != b"PK\x03\x04":
+        return None, None, ["IEOD aún no publicado"]
+    f = fecha_dt.date()
+    avisos = []
+    try:
+        xls = pd.ExcelFile(io.BytesIO(data), engine="openpyxl")
+    except Exception as e:
+        return None, None, [f"no se pudo abrir el IEOD: {e}"]
+    try:
+        df_t, av1 = leer_tipo_recurso(xls, f)
+        avisos += [f"TIPO_RECURSO: {a}" for a in av1]
+    except Exception as e:
+        df_t = None; avisos.append(f"TIPO_RECURSO: error {e}")
+    try:
+        df_a, av2 = leer_g_areas(xls, f)
+        avisos += [f"G_AREAS: {a}" for a in av2]
+    except Exception as e:
+        df_a = None; avisos.append(f"G_AREAS: error {e}")
+    return df_t, df_a, avisos
+
+
+def tab56_procesar_rango(fecha_inicio, fecha_fin, log):
+    fechas = pd.date_range(fecha_inicio, fecha_fin, freq="D")
+    log.write(f"IEOD (TIPO_RECURSO + G_AREAS) — {fecha_inicio.date()} → {fecha_fin.date()} ({len(fechas)} días)")
+    prog = st.progress(0)
+    lt, la = [], []
+    for i, fdt in enumerate(fechas, 1):
+        prog.progress(i / len(fechas))
+        df_t, df_a, avisos = tab56_procesar_fecha(fdt)
+        if df_t is not None and not df_t.empty:
+            lt.append(df_t)
+        if df_a is not None and not df_a.empty:
+            la.append(df_a)
+        for a in avisos:
+            if a == "IEOD aún no publicado":
+                log.write(f"  {fdt.date()}: IEOD aún no publicado (se intentará en la próxima actualización)")
+            else:
+                log.write(f"  ⚠️ {fdt.date()} {a}")
+    prog.empty()
+    cat = lambda lst: pd.concat(lst, ignore_index=True) if lst else pd.DataFrame()
+    return cat(lt), cat(la)
+
+
 # ════════════════════════════════════════════════════════════════════════════════
 # STREAMLIT UI
 # ════════════════════════════════════════════════════════════════════════════════
@@ -836,7 +1287,20 @@ FECHA_FIN = pd.Timestamp(fecha_fin_sel)
 # ── Estado actual de la base ──────────────────────────────────────────────────
 st.markdown('<div class="seccion-titulo">ESTADO DE LOS DATOS</div>', unsafe_allow_html=True)
 
-TABLAS = ["DEMANDA", MOTIVOS_SHEET, COSTOS_SHEET, INDICES_SHEET, GENERACION_SHEET]
+TABLAS = ["DEMANDA", MOTIVOS_SHEET, COSTOS_SHEET, INDICES_SHEET, GENERACION_SHEET,
+          CMG_SHEET, IEOD_TIPO_SHEET, IEOD_AREAS_SHEET]
+# El IEOD (ejecutado) se publica al día siguiente: está "al día" si llega hasta ayer
+TABLAS_IEOD = {IEOD_TIPO_SHEET, IEOD_AREAS_SHEET}
+DESCRIPCION = {
+    "DEMANDA": "Tab 1 · Demanda PDO/RDO",
+    MOTIVOS_SHEET: "Tab 2 · Motivos de reprogramación",
+    COSTOS_SHEET: "Tab 2 · Costo total",
+    INDICES_SHEET: "Tab 2 · Índices α β γ",
+    GENERACION_SHEET: "Tab 3 · Generación por recurso PDO/RDO",
+    CMG_SHEET: "Tab 4 · CMG programado (3 barras)",
+    IEOD_TIPO_SHEET: "Tabs 5 y 6 · IEOD ejecutado por tipo de recurso",
+    IEOD_AREAS_SHEET: "Tab 6 · IEOD ejecutado por área (Norte/Centro/Sur)",
+}
 
 @st.cache_data(ttl=60, show_spinner="Consultando fechas en base de datos …")
 def _cargar_max_fechas():
@@ -852,8 +1316,9 @@ todo_ok = True
 for tabla in TABLAS:
     mx = max_fechas.get(tabla)
     fecha_str = str(mx.date()) if mx else "sin datos"
-    dias_atraso = (FECHA_FIN - mx).days if mx else None
-    if mx and mx >= FECHA_FIN:
+    objetivo = FECHA_FIN - pd.Timedelta(days=1) if tabla in TABLAS_IEOD else FECHA_FIN
+    dias_atraso = (objetivo - mx).days if mx else None
+    if mx and mx >= objetivo:
         badge = '<span class="badge-ok">✓ Al día</span>'
     elif mx:
         badge = f'<span class="badge-warn">Pendiente: {dias_atraso} día(s)</span>'
@@ -866,7 +1331,7 @@ for tabla in TABLAS:
     <div class="card-estado">
         <div>
             <div class="card-tabla">{tabla}</div>
-            <div class="card-fecha">Último registro: {fecha_str}</div>
+            <div class="card-fecha">{DESCRIPCION.get(tabla, "")} · Último registro: {fecha_str}</div>
         </div>
         {badge}
     </div>
@@ -962,6 +1427,35 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     else:
         log.write("GENERACION_RDO ya está al día ✅")
         resumen[GENERACION_SHEET] = 0
+
+    # ── CMG (tab 4) ───────────────────────────────────────────────────────────
+    mx_cmg = max_fechas.get(CMG_SHEET)
+    inicio_cmg = FECHA_INICIO_INICIAL if mx_cmg is None else mx_cmg   # incluye el último día
+    if inicio_cmg <= FECHA_FIN:
+        df_cmg = tab4_procesar_rango(inicio_cmg, FECHA_FIN, log)
+        nc_ = _insertar_df_pg(df_cmg, CMG_SHEET, con)
+        resumen[CMG_SHEET] = nc_
+        log.write(f"  → {nc_:,} filas insertadas en CMG_RDO")
+    else:
+        log.write("CMG_RDO ya está al día ✅")
+        resumen[CMG_SHEET] = 0
+
+    # ── IEOD (tabs 5 y 6) ─────────────────────────────────────────────────────
+    mx_t = max_fechas.get(IEOD_TIPO_SHEET)
+    mx_a = max_fechas.get(IEOD_AREAS_SHEET)
+    inicio_t = FECHA_INICIO_INICIAL if mx_t is None else mx_t
+    inicio_a = FECHA_INICIO_INICIAL if mx_a is None else mx_a
+    inicio_ieod = min(inicio_t, inicio_a)          # incluye el último día guardado
+    if inicio_ieod <= FECHA_FIN:
+        df_t, df_a = tab56_procesar_rango(inicio_ieod, FECHA_FIN, log)
+        nt = _insertar_df_pg(df_t, IEOD_TIPO_SHEET, con)
+        na = _insertar_df_pg(df_a, IEOD_AREAS_SHEET, con)
+        resumen[IEOD_TIPO_SHEET] = nt
+        resumen[IEOD_AREAS_SHEET] = na
+        log.write(f"  → IEOD_TIPO_RECURSO: {nt:,} | IEOD_G_AREAS: {na:,} filas insertadas")
+    else:
+        log.write("IEOD ya está al día ✅")
+        resumen[IEOD_TIPO_SHEET] = resumen[IEOD_AREAS_SHEET] = 0
 
     con.close()
 
