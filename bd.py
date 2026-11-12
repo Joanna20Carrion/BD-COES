@@ -256,11 +256,25 @@ def _max_fecha_pg(tabla: str):
         return None
 
 
+_cols_cache: dict = {}
+
+def _columnas_tabla(con, tabla: str) -> list:
+    """Columnas que existen hoy en la tabla de Supabase (para insertar solo esas)."""
+    if tabla not in _cols_cache:
+        cur = con.cursor()
+        cur.execute("SELECT column_name, data_type FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = %s", (tabla,))
+        _cols_cache[tabla] = dict(cur.fetchall())
+    return _cols_cache[tabla]
+
+
 def _insertar_df_pg(df: pd.DataFrame, tabla: str, con) -> int:
     """
     Reemplaza por día: borra las filas de las fechas del df y las vuelve a insertar.
     Así el último día guardado siempre queda completo (p. ej. si salió un RDO nuevo)
     y no quedan filas viejas. Todo en una transacción: si algo falla, no se borra nada.
+    Solo se insertan las columnas que existen en la tabla (las que Power BI
+    reconstruye solas, como Hora, se omiten si ya no están en Supabase).
     Retorna el número de filas insertadas.
     """
     if df is None or df.empty:
@@ -268,6 +282,9 @@ def _insertar_df_pg(df: pd.DataFrame, tabla: str, con) -> int:
     df = df.copy()
     if "Fecha" in df.columns:
         df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.strftime("%Y-%m-%d")
+    existentes = _columnas_tabla(con, tabla)
+    if existentes:
+        df = df[[c for c in df.columns if c in existentes]]
     df = df.astype(object).where(pd.notnull(df), None)    # NaN → NULL
 
     cols = list(df.columns)
@@ -277,7 +294,8 @@ def _insertar_df_pg(df: pd.DataFrame, tabla: str, con) -> int:
     cur = con.cursor()
     try:
         if fechas:
-            cur.execute(f'DELETE FROM "{tabla}" WHERE "Fecha" = ANY(%s)', (fechas,))
+            tipo_fecha = "::date[]" if existentes.get("Fecha") == "date" else ""
+            cur.execute(f'DELETE FROM "{tabla}" WHERE "Fecha" = ANY(%s{tipo_fecha})', (fechas,))
         rows = [tuple(r) for r in df.itertuples(index=False)]
         psycopg2.extras.execute_values(cur, sql_ins, rows, page_size=2000)
         con.commit()
@@ -766,6 +784,107 @@ def tab4_procesar_rango(fecha_inicio, fecha_fin, log):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# TABS 7 y 8 — TÉRMICAS GAS Y DIÉSEL POR CENTRAL  →  tabla TERMICAS_RDO
+# ════════════════════════════════════════════════════════════════════════════════
+# Sale del mismo ZIP de YUPANA ("Termica - Despacho (MW).csv"), no se baja nada extra.
+# Una fila por Fecha + Serie + Periodo, con una columna por central (MW).
+# Cada central suma sus unidades, igual que los tabs 7 y 8 de la app. Las unidades
+# se reconocen por su nombre sin espacios (MAL1TG6GAS y "MALACAS1 TG 6  GAS" caen
+# en MALACAS gas); las que no son de ninguna central van a "otras".
+# Las columnas deben coincidir con Supabase y con la tabla TERMICAS_CENTRALES.
+
+TERMICAS_SHEET = "TERMICAS_RDO"
+
+_PREFIJOS_CENTRAL = [
+    ("KALLPA", "kallpa"), ("CHILCA1", "chilca1"), ("CHILCA2", "chilca2"),
+    ("FENIX", "fenix"), ("VENT", "ventanilla"), ("OLLEROS", "olleros"),
+    ("LFLORES", "las_flores"), ("LASFLORES", "las_flores"),
+    ("INDEP", "independencia"), ("STAROSA", "santa_rosa"), ("SANTAROSA", "santa_rosa"),
+    ("MALACAS", "malacas"), ("MAL", "malacas"),
+    ("AGUAYTIA", "aguaytia"), ("AGE", "aguaytia"),
+    ("RFILO", "rf_ilo"), ("RECKA", "recka"),
+    ("PTOBRVO", "puerto_bravo"), ("PUERTOBRAVO", "puerto_bravo"),
+    ("CTNEPI", "ilo4"), ("NEPI", "ilo4"), ("RFETEN", "eten"),
+    ("RFPTOMALDONADO", "rf_pto_maldonado"), ("RFPUCALLPA", "rf_pucallpa"),
+    ("CHILINA", "chilina"), ("TUMBES", "tumbes"),
+]
+TERMICAS_COLS_MW = [
+    "g_kallpa", "g_chilca1", "g_chilca2", "g_fenix", "g_ventanilla", "g_olleros",
+    "g_las_flores", "g_independencia", "g_santa_rosa", "g_malacas", "g_aguaytia", "g_otras",
+    "d_malacas", "d_ventanilla", "d_rf_ilo", "d_recka", "d_puerto_bravo", "d_fenix",
+    "d_ilo4", "d_eten", "d_rf_pto_maldonado", "d_rf_pucallpa", "d_chilina",
+    "d_santa_rosa", "d_tumbes", "d_otras",
+    "o_otras",
+]
+TERMICAS_COLUMNAS = ["Fecha", "Serie", "Periodo"] + TERMICAS_COLS_MW
+
+
+def _termica_columna(nombre) -> str:
+    """'KALLPATG1GAS' -> 'g_kallpa', 'FENIX GT11  D2' -> 'd_fenix', 'SNTV1R500' -> 'o_otras'."""
+    import re as _re, unicodedata as _ud
+    s = _ud.normalize("NFKD", str(nombre)).encode("ASCII", "ignore").decode().upper()
+    s = _re.sub(r"\s+", "", s)
+    if "GAS" in s:
+        pre = "g_"
+    elif "D2" in s or "DIESEL" in s:
+        pre = "d_"
+    else:
+        return "o_otras"
+    clave = next((c for p, c in _PREFIJOS_CENTRAL if s.startswith(p)), "otras")
+    col = pre + clave
+    return col if col in TERMICAS_COLS_MW else pre + "otras"
+
+
+def _termicas_por_central(df, fecha_d: str, serie: str) -> pd.DataFrame:
+    """CSV ancho (una columna por unidad) -> una fila por periodo, una columna por central."""
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.tail(48).reset_index(drop=True)
+    n = len(df)
+    out = pd.DataFrame(0.0, index=range(n), columns=TERMICAS_COLS_MW)
+    for c in df.columns[1:]:
+        out[_termica_columna(c)] += pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    out = out.round(3)
+    out.insert(0, "Periodo", range(48 - n + 1, 49))
+    out.insert(0, "Serie", serie)
+    out.insert(0, "Fecha", fecha_d)
+    return out[TERMICAS_COLUMNAS]
+
+
+def tab78_procesar_fecha(fecha_dt) -> pd.DataFrame:
+    fecha_d = str(fecha_dt.date())
+    partes = []
+    df = _csv_zip(fecha_dt, "PDO", None, ARCHIVO_TERMICA)
+    if df is not None and not df.empty:
+        partes.append(_termicas_por_central(df, fecha_d, "PDO"))
+    for letra in RDO_LETRAS_GENERACION:
+        df = _csv_zip(fecha_dt, "RDO", letra, ARCHIVO_TERMICA)
+        if df is None:
+            break                       # no hay más RDO ese día
+        if not df.empty:
+            partes.append(_termicas_por_central(df, fecha_d, f"RDO {letra}"))
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame(columns=TERMICAS_COLUMNAS)
+
+
+def tab78_procesar_rango(fecha_inicio, fecha_fin, log):
+    fechas = pd.date_range(fecha_inicio, fecha_fin, freq="D")
+    log.write(f"TÉRMICAS por central — {fecha_inicio.date()} → {fecha_fin.date()} ({len(fechas)} días)")
+    prog = st.progress(0)
+    tablas = []
+    for i, fdt in enumerate(fechas, 1):
+        prog.progress(i / len(fechas))
+        try:
+            df_f = tab78_procesar_fecha(fdt)
+        except Exception as e:
+            log.write(f"  ⚠️ {fdt.date()} térmicas: {e}")
+            continue
+        if not df_f.empty:
+            tablas.append(df_f)
+    prog.empty()
+    return pd.concat(tablas, ignore_index=True) if tablas else pd.DataFrame()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # TABS 5 y 6 — IEOD EJECUTADO  →  tablas IEOD_TIPO_RECURSO e IEOD_G_AREAS
 # ════════════════════════════════════════════════════════════════════════════════
 # Archivo AnexoA_ddmm.xlsx del IEOD (sale al día siguiente). Se leen dos hojas
@@ -1133,6 +1252,34 @@ def tab56_procesar_fecha(fecha_dt):
     return df_t, df_a, avisos
 
 
+IEOD_AREAS_COLUMNAS_SHEET = "IEOD_G_AREAS_COLUMNAS"
+
+def _actualizar_columnas_g_areas(df_a, con):
+    """
+    Area, Tipo y Columna_IEOD dependen solo de (Bloque, Columna), así que se guardan
+    una sola vez en IEOD_G_AREAS_COLUMNAS (Power BI las vuelve a unir al cargar).
+    Si el COES agrega una columna nueva, aquí se registra sola.
+    """
+    if df_a is None or df_a.empty or not _columnas_tabla(con, IEOD_AREAS_COLUMNAS_SHEET):
+        return
+    cols = ["Bloque", "Columna", "Area", "Tipo", "Columna_IEOD"]
+    if any(c not in df_a.columns for c in cols):
+        return
+    dim = df_a[cols].drop_duplicates(subset=["Bloque", "Columna"])
+    dim = dim.astype(object).where(pd.notnull(dim), None)
+    cur = con.cursor()
+    try:
+        psycopg2.extras.execute_values(
+            cur,
+            f'INSERT INTO "{IEOD_AREAS_COLUMNAS_SHEET}" ("Bloque","Columna","Area","Tipo","Columna_IEOD") '
+            'VALUES %s ON CONFLICT ("Bloque","Columna") DO NOTHING',
+            [tuple(r) for r in dim.itertuples(index=False)])
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+
+
 def tab56_procesar_rango(fecha_inicio, fecha_fin, log):
     fechas = pd.date_range(fecha_inicio, fecha_fin, freq="D")
     log.write(f"IEOD (TIPO_RECURSO + G_AREAS) — {fecha_inicio.date()} → {fecha_fin.date()} ({len(fechas)} días)")
@@ -1288,18 +1435,19 @@ FECHA_FIN = pd.Timestamp(fecha_fin_sel)
 st.markdown('<div class="seccion-titulo">ESTADO DE LOS DATOS</div>', unsafe_allow_html=True)
 
 TABLAS = ["DEMANDA", MOTIVOS_SHEET, COSTOS_SHEET, INDICES_SHEET, GENERACION_SHEET,
-          CMG_SHEET, IEOD_TIPO_SHEET, IEOD_AREAS_SHEET]
+          CMG_SHEET, IEOD_TIPO_SHEET, IEOD_AREAS_SHEET, TERMICAS_SHEET]
 # El IEOD (ejecutado) se publica al día siguiente: está "al día" si llega hasta ayer
 TABLAS_IEOD = {IEOD_TIPO_SHEET, IEOD_AREAS_SHEET}
 DESCRIPCION = {
-    "DEMANDA": "Demanda PDO/RDO",
-    MOTIVOS_SHEET: "Motivos de reprogramación",
-    COSTOS_SHEET: "Costo total",
-    INDICES_SHEET: "Índices α β γ",
-    GENERACION_SHEET: "Generación por recurso PDO/RDO",
-    CMG_SHEET: "CMG programado (3 barras)",
-    IEOD_TIPO_SHEET: "IEOD ejecutado por tipo de recurso",
-    IEOD_AREAS_SHEET: "IEOD ejecutado por área (Norte/Centro/Sur)",
+    "DEMANDA": "Tab 1 · Demanda PDO/RDO",
+    MOTIVOS_SHEET: "Tab 2 · Motivos de reprogramación",
+    COSTOS_SHEET: "Tab 2 · Costo total",
+    INDICES_SHEET: "Tab 2 · Índices α β γ",
+    GENERACION_SHEET: "Tab 3 · Generación por recurso PDO/RDO",
+    CMG_SHEET: "Tab 4 · CMG programado (3 barras)",
+    IEOD_TIPO_SHEET: "Tabs 5 y 6 · IEOD ejecutado por tipo de recurso",
+    IEOD_AREAS_SHEET: "Tab 6 · IEOD ejecutado por área (Norte/Centro/Sur)",
+    TERMICAS_SHEET: "Tabs 7 y 8 · Térmicas gas y diésel por central",
 }
 
 @st.cache_data(ttl=60, show_spinner="Consultando fechas en base de datos …")
@@ -1449,6 +1597,7 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     if inicio_ieod <= FECHA_FIN:
         df_t, df_a = tab56_procesar_rango(inicio_ieod, FECHA_FIN, log)
         nt = _insertar_df_pg(df_t, IEOD_TIPO_SHEET, con)
+        _actualizar_columnas_g_areas(df_a, con)
         na = _insertar_df_pg(df_a, IEOD_AREAS_SHEET, con)
         resumen[IEOD_TIPO_SHEET] = nt
         resumen[IEOD_AREAS_SHEET] = na
@@ -1456,6 +1605,24 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     else:
         log.write("IEOD ya está al día ✅")
         resumen[IEOD_TIPO_SHEET] = resumen[IEOD_AREAS_SHEET] = 0
+
+    # ── TÉRMICAS POR CENTRAL (tabs 7 y 8) ─────────────────────────────────────
+    mx_ter = max_fechas.get(TERMICAS_SHEET)
+    if mx_ter is None:
+        # El histórico se carga con el script termicas_coes.py; aquí solo los últimos días
+        inicio_ter = max(FECHA_INICIO_INICIAL, FECHA_FIN - pd.Timedelta(days=2))
+        log.write("TERMICAS_RDO está vacía: se cargan solo los últimos 3 días "
+                  "(el histórico se sube con termicas_coes.py)")
+    else:
+        inicio_ter = mx_ter                          # incluye el último día guardado
+    if inicio_ter <= FECHA_FIN:
+        df_ter = tab78_procesar_rango(inicio_ter, FECHA_FIN, log)
+        nter = _insertar_df_pg(df_ter, TERMICAS_SHEET, con)
+        resumen[TERMICAS_SHEET] = nter
+        log.write(f"  → {nter:,} filas insertadas en TERMICAS_RDO")
+    else:
+        log.write("TERMICAS_RDO ya está al día ✅")
+        resumen[TERMICAS_SHEET] = 0
 
     con.close()
 
