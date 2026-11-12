@@ -1292,14 +1292,14 @@ TABLAS = ["DEMANDA", MOTIVOS_SHEET, COSTOS_SHEET, INDICES_SHEET, GENERACION_SHEE
 # El IEOD (ejecutado) se publica al día siguiente: está "al día" si llega hasta ayer
 TABLAS_IEOD = {IEOD_TIPO_SHEET, IEOD_AREAS_SHEET}
 DESCRIPCION = {
-    "DEMANDA": "Tab 1 · Demanda PDO/RDO",
-    MOTIVOS_SHEET: "Tab 2 · Motivos de reprogramación",
-    COSTOS_SHEET: "Tab 2 · Costo total",
-    INDICES_SHEET: "Tab 2 · Índices α β γ",
-    GENERACION_SHEET: "Tab 3 · Generación por recurso PDO/RDO",
-    CMG_SHEET: "Tab 4 · CMG programado (3 barras)",
-    IEOD_TIPO_SHEET: "Tabs 5 y 6 · IEOD ejecutado por tipo de recurso",
-    IEOD_AREAS_SHEET: "Tab 6 · IEOD ejecutado por área (Norte/Centro/Sur)",
+    "DEMANDA": "Demanda PDO/RDO",
+    MOTIVOS_SHEET: "Motivos de reprogramación",
+    COSTOS_SHEET: "Costo total",
+    INDICES_SHEET: "Índices α β γ",
+    GENERACION_SHEET: "Generación por recurso PDO/RDO",
+    CMG_SHEET: "CMG programado (3 barras)",
+    IEOD_TIPO_SHEET: "IEOD ejecutado por tipo de recurso",
+    IEOD_AREAS_SHEET: "IEOD ejecutado por área (Norte/Centro/Sur)",
 }
 
 @st.cache_data(ttl=60, show_spinner="Consultando fechas en base de datos …")
