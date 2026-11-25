@@ -1303,6 +1303,102 @@ def tab56_procesar_rango(fecha_inicio, fecha_fin, log):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
+# TAB 10 — POTENCIA ACTIVA (medidores, Excel mensual)  →  tabla POTENCIA_ACTIVA
+# ════════════════════════════════════════════════════════════════════════════════
+# No se descarga del COES: es el Excel mensual "REGISTROS DE MEDIDORES EN BORNES DE
+# GENERACIÓN CADA 15 MINUTOS DE POTENCIA ACTIVA (MW)" que alguien sube a la app.
+# Se guardan las centrales solares (C.S.) y eólicas (C.E.), con sus unidades/bloques
+# sumados por fecha (igual que el tab 10). p01 = 00:15 ... p96 = 00:00.
+
+POTENCIA_SHEET = "POTENCIA_ACTIVA"
+POTENCIA_CENTRALES_SHEET = "POTENCIA_ACTIVA_CENTRALES"
+POTENCIA_COLS_P = [f"p{i:02d}" for i in range(1, 97)]
+
+
+def _pa_sin_tildes(s) -> str:
+    import unicodedata as _ud
+    return _ud.normalize("NFKD", str(s)).encode("ASCII", "ignore").decode()
+
+
+def _pa_norm_central(s) -> str:
+    import re as _re
+    return _re.sub(r"\s+", " ", str(s)).strip().upper()
+
+
+def _pa_hora_a_indice(h):
+    import re as _re
+    m = _re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(h))
+    if not m:
+        return None
+    minutos = int(m.group(1)) * 60 + int(m.group(2))
+    if minutos == 0:
+        return 96
+    if minutos % 15:
+        return None
+    return minutos // 15
+
+
+def leer_excel_potencia(data: bytes, nombre: str = "") -> pd.DataFrame:
+    """Excel de medidores -> Fecha | Central | p01..p96 (solo C.S. y C.E., unidades sumadas)."""
+    xls = pd.ExcelFile(io.BytesIO(data), engine="openpyxl")
+    hoja = next((h for h in xls.sheet_names if "ACTIVA" in _pa_sin_tildes(h).upper()), xls.sheet_names[0])
+    crudo = pd.read_excel(xls, sheet_name=hoja, header=None, nrows=40)
+    fila = 9
+    for i in range(len(crudo)):
+        vals = {_pa_sin_tildes(v).strip().upper() for v in crudo.iloc[i].dropna().astype(str)}
+        if "FECHA" in vals and "CENTRAL" in vals:
+            fila = i
+            break
+    df = pd.read_excel(xls, sheet_name=hoja, header=fila)
+    df.columns = [str(c).strip() for c in df.columns]
+    col = {_pa_sin_tildes(c).upper(): c for c in df.columns}
+    c_fecha, c_central = col.get("FECHA"), col.get("CENTRAL")
+    if not c_fecha or not c_central:
+        raise ValueError(f"{nombre}: no encontré las columnas FECHA y CENTRAL")
+    horas = {}
+    for c in df.columns:
+        k = _pa_hora_a_indice(c)
+        if k is not None and k not in horas.values():
+            horas[c] = k
+    if len(horas) < 90:
+        raise ValueError(f"{nombre}: solo encontré {len(horas)} columnas de hora (se esperaban 96)")
+    fechas = pd.to_datetime(df[c_fecha].astype(str).str.strip(), format="%d/%m/%Y", errors="coerce")
+    df = df.assign(_fecha=fechas, _central=df[c_central].map(_pa_norm_central))
+    df = df[df["_fecha"].notna()]                                   # fuera totales y leyenda
+    df = df[df["_central"].str.match(r"^C\.(S|E)\.")]             # solo solares y eólicas
+    valores = df[list(horas)].apply(pd.to_numeric, errors="coerce")
+    valores.columns = [f"p{horas[c]:02d}" for c in horas]
+    valores["_fecha"] = df["_fecha"].dt.strftime("%Y-%m-%d")
+    valores["_central"] = df["_central"]
+    suma = valores.groupby(["_fecha", "_central"]).sum(min_count=1).reset_index()
+    suma = suma.rename(columns={"_fecha": "Fecha", "_central": "Central"})
+    for c in POTENCIA_COLS_P:
+        if c not in suma.columns:
+            suma[c] = None
+    suma[POTENCIA_COLS_P] = suma[POTENCIA_COLS_P].round(5)
+    return suma[["Fecha", "Central"] + POTENCIA_COLS_P]
+
+
+def subir_potencia_pg(df: pd.DataFrame, con) -> int:
+    """Agrega centrales nuevas a la lista y reemplaza por fecha las filas de POTENCIA_ACTIVA."""
+    if df is None or df.empty:
+        return 0
+    cur = con.cursor()
+    try:
+        centrales = sorted(df["Central"].unique())
+        psycopg2.extras.execute_values(
+            cur,
+            f'INSERT INTO "{POTENCIA_CENTRALES_SHEET}" ("Central","Grupo","Tipo","Orden","Tab10") VALUES %s '
+            'ON CONFLICT ("Central") DO NOTHING',
+            [(c, c, "SOLAR" if c.startswith("C.S.") else "EOLICA", 99, False) for c in centrales])
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    return _insertar_df_pg(df, POTENCIA_SHEET, con)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
 # STREAMLIT UI
 # ════════════════════════════════════════════════════════════════════════════════
 
@@ -1631,3 +1727,39 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     st.success(f"✅ Actualización completada — {total_insertadas:,} filas nuevas en total.")
     st.cache_data.clear()   # fuerza recarga de fechas al próximo refresh
     st.rerun()
+
+
+# ── Tab 10: subir Excel de Potencia Activa ────────────────────────────────────
+st.markdown('<div class="seccion-titulo">TAB 10 · POTENCIA ACTIVA (MEDIDORES)</div>', unsafe_allow_html=True)
+_mx_pa = _max_fecha_pg(POTENCIA_SHEET)
+st.markdown(f"""
+<div class="card-estado">
+    <div>
+        <div class="card-tabla">{POTENCIA_SHEET}</div>
+        <div class="card-fecha">Excel mensual de medidores (solares y eólicas) · Último registro: {str(_mx_pa.date()) if _mx_pa else "sin datos"}</div>
+    </div>
+    <span class="badge-ok">Se sube a mano</span>
+</div>
+""", unsafe_allow_html=True)
+_archivos_pa = st.file_uploader(
+    "Sube uno o varios Excel de 'Registros de medidores ... potencia activa (MW)'",
+    type=["xlsx"], accept_multiple_files=True, key="uploader_potencia")
+if _archivos_pa and st.button("Subir Potencia Activa", use_container_width=True):
+    _partes = []
+    for _a in _archivos_pa:
+        try:
+            _d = leer_excel_potencia(_a.getvalue(), _a.name)
+            st.write(f"✓ {_a.name}: {_d['Fecha'].min()} → {_d['Fecha'].max()} · "
+                     f"{_d['Fecha'].nunique()} días · {_d['Central'].nunique()} centrales")
+            _partes.append(_d)
+        except Exception as _e:
+            st.error(f"✗ {_a.name}: {_e}")
+    if _partes:
+        _df_pa = pd.concat(_partes, ignore_index=True).drop_duplicates(["Fecha", "Central"], keep="last")
+        try:
+            _con = _pg_con()
+            _n = subir_potencia_pg(_df_pa, _con)
+            _con.close()
+            st.success(f"✅ {_n:,} filas subidas a POTENCIA_ACTIVA.")
+        except Exception as _e:
+            st.error(f"No se pudo subir a Supabase: {_e}")
