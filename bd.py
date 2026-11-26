@@ -1509,11 +1509,11 @@ st.markdown("""
 
 /* Mensajes propios (se leen sobre el fondo azul) */
 .msg-linea {
-    background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
-    border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
-    color: #ffffff; font-size: 0.88rem;
+    background: rgba(18,153,107,0.22); border: 1px solid #6CF5BC;
+    border-radius: 12px; padding: 0.9rem 1.2rem; margin: 0.5rem 0;
+    color: #6CF5BC; font-weight: 600; font-size: 0.95rem; line-height: 1.6;
 }
-.msg-linea.err { border-left-color: #FF9B9B; }
+.msg-linea.err { background: rgba(209,67,67,0.22); border-color: #FF9B9B; color: #FFB4B4; }
 
 /* Panel de subida del tab 10 (st.container con borde que contiene .panel-titulo) */
 /* Solo el panel (no el bloque principal de la página, que también tiene envoltorio) */
@@ -1742,9 +1742,13 @@ st.markdown(f"""
 
 # Mensaje de la última subida (se guarda para mostrarlo después del rerun)
 if "pa_resultado" in st.session_state:
-    for _l in st.session_state.pop("pa_resultado"):
-        _cls = " err" if _l.startswith("✗") else ""
-        st.markdown(f'<div class="msg-linea{_cls}">{_l}</div>', unsafe_allow_html=True)
+    _res = st.session_state.pop("pa_resultado")
+    _bien = [l for l in _res if not l.startswith("✗")]
+    _mal  = [l for l in _res if l.startswith("✗")]
+    if _bien:   # un solo recuadro verde, como el de "Todas las tablas están al día"
+        st.markdown(f'<div class="msg-linea">{"<br>".join(_bien)}</div>', unsafe_allow_html=True)
+    if _mal:    # y uno rojo con lo que falló
+        st.markdown(f'<div class="msg-linea err">{"<br>".join(_mal)}</div>', unsafe_allow_html=True)
 
 with st.container(border=True):
     st.markdown('<div class="panel-titulo">Subir Excel de Potencia Activa</div>'
@@ -1765,7 +1769,7 @@ if _subir and _archivos_pa:
         for _a in _archivos_pa:
             try:
                 _d = leer_excel_potencia(_a.getvalue(), _a.name)
-                _lineas.append(f"✓ {_a.name}: {_d['Fecha'].min()} → {_d['Fecha'].max()} · "
+                _lineas.append(f"✅ {_a.name}: {_d['Fecha'].min()} → {_d['Fecha'].max()} · "
                                f"{_d['Fecha'].nunique()} días · {_d['Central'].nunique()} centrales")
                 _partes.append(_d)
             except Exception as _e:
