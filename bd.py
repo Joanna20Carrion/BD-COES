@@ -1589,15 +1589,15 @@ TABLAS = ["DEMANDA", MOTIVOS_SHEET, COSTOS_SHEET, INDICES_SHEET, GENERACION_SHEE
 # El IEOD (ejecutado) se publica al día siguiente: está "al día" si llega hasta ayer
 TABLAS_IEOD = {IEOD_TIPO_SHEET, IEOD_AREAS_SHEET}
 DESCRIPCION = {
-    "DEMANDA": "Tab 1 · Demanda PDO/RDO",
-    MOTIVOS_SHEET: "Tab 2 · Motivos de reprogramación",
-    COSTOS_SHEET: "Tab 2 · Costo total",
-    INDICES_SHEET: "Tab 2 · Índices α β γ",
-    GENERACION_SHEET: "Tab 3 · Generación por recurso PDO/RDO",
-    CMG_SHEET: "Tab 4 · CMG programado (3 barras)",
-    IEOD_TIPO_SHEET: "Tabs 5 y 6 · IEOD ejecutado por tipo de recurso",
-    IEOD_AREAS_SHEET: "Tab 6 · IEOD ejecutado por área (Norte/Centro/Sur)",
-    TERMICAS_SHEET: "Tabs 7 y 8 · Térmicas gas y diésel por central",
+    "DEMANDA": "Demanda PDO/RDO",
+    MOTIVOS_SHEET: "Motivos de reprogramación",
+    COSTOS_SHEET: "Costo total",
+    INDICES_SHEET: "Índices α β γ",
+    GENERACION_SHEET: "Generación por recurso PDO/RDO",
+    CMG_SHEET: "CMG programado (3 barras)",
+    IEOD_TIPO_SHEET: "IEOD ejecutado por tipo de recurso",
+    IEOD_AREAS_SHEET: "IEOD ejecutado por área (Norte/Centro/Sur)",
+    TERMICAS_SHEET: "Térmicas gas y diésel por central",
 }
 
 @st.cache_data(ttl=60, show_spinner="Consultando fechas en base de datos …")
@@ -1663,7 +1663,7 @@ _zona_log = st.container()   # aquí sale el avance; el tab 10 se dibuja debajo 
 
 
 # ── Tab 10: Potencia Activa (Excel mensual que se sube a mano) ───────────────
-st.markdown('<div class="seccion-titulo">TAB 10 · POTENCIA ACTIVA (MEDIDORES)</div>', unsafe_allow_html=True)
+st.markdown('<div class="seccion-titulo">POTENCIA ACTIVA (MEDIDORES)</div>', unsafe_allow_html=True)
 
 _MES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun",
               "jul", "ago", "set", "oct", "nov", "dic"]
@@ -1726,7 +1726,7 @@ st.markdown(f"""
     <div class="card-cab">
         <div>
             <div class="card-tabla">{POTENCIA_SHEET}</div>
-            <div class="card-fecha">Tab 10 · Medidores de potencia activa (solares y eólicas) · {_hasta_txt}</div>
+            <div class="card-fecha">Medidores de potencia activa (solares y eólicas) · {_hasta_txt}</div>
         </div>
         {_badge_pa}
     </div>
