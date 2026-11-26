@@ -1469,7 +1469,7 @@ st.markdown("""
 }
 .subtitulo-app {
     text-align: center;
-    color: #a0a8c0;
+    color: #c3cbe6;
     font-size: 0.95rem;
     margin-bottom: 2rem;
 }
@@ -1486,20 +1486,67 @@ st.markdown("""
     align-items: center;
     backdrop-filter: blur(8px);
 }
-.card-tabla  { font-weight: 600; color: #e0e6ff; font-size: 0.95rem; }
-.card-fecha  { color: #8892b0; font-size: 0.85rem; }
-.badge-ok    { background: #0a3322; color: #12996B; border-radius: 20px;
-               padding: 3px 14px; font-size: 0.8rem; font-weight: 700;
-               border: 1px solid #12996B44; }
-.badge-warn  { background: #3a2800; color: #FCE122; border-radius: 20px;
-               padding: 3px 14px; font-size: 0.8rem; font-weight: 700;
-               border: 1px solid #FCE12244; }
-.badge-err   { background: #3a0a0a; color: #D14343; border-radius: 20px;
-               padding: 3px 14px; font-size: 0.8rem; font-weight: 700;
-               border: 1px solid #D1434344; }
+.card-tabla  { font-weight: 700; color: #ffffff; font-size: 0.95rem; }
+.card-fecha  { color: #c3cbe6; font-size: 0.85rem; }
+.badge-ok, .badge-warn, .badge-err, .badge-info {
+    border-radius: 20px; padding: 4px 14px; font-size: 0.8rem; font-weight: 700;
+    white-space: nowrap; margin-left: 12px;
+}
+.badge-ok    { background: rgba(18,153,107,0.30); color: #6CF5BC; border: 1px solid #6CF5BC88; }
+.badge-warn  { background: rgba(252,225,34,0.18); color: #FFE95C; border: 1px solid #FFE95C88; }
+.badge-err   { background: rgba(209,67,67,0.30);  color: #FF9B9B; border: 1px solid #FF9B9B88; }
+.badge-info  { background: rgba(140,175,255,0.22); color: #D6E2FF; border: 1px solid #D6E2FF66; }
+
+/* Tab 10: meses cargados como fichas */
+.pa-meses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 0.6rem; }
+.pa-mes   { border-radius: 8px; padding: 2px 9px; font-size: 0.75rem; font-weight: 700; }
+.pa-ok    { background: rgba(18,153,107,0.35); color: #E8FFF5; border: 1px solid #6CF5BC99; }
+.pa-inc   { background: rgba(252,225,34,0.25); color: #FFF6B0; border: 1px solid #FFE95C99; }
+.pa-falta { background: rgba(255,255,255,0.06); color: #c3cbe6; border: 1px dashed #c3cbe699; }
+.pa-leyenda { color: #c3cbe6; font-size: 0.78rem; margin-top: 0.5rem; }
+.card-col { display: block; }
+.card-col .card-cab { display: flex; justify-content: space-between; align-items: center; }
+
+/* Mensajes propios (se leen sobre el fondo azul) */
+.msg-linea {
+    background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
+    border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
+    color: #ffffff; font-size: 0.88rem;
+}
+.msg-linea.err { border-left-color: #FF9B9B; }
+
+/* Panel de subida del tab 10 (st.container con borde que contiene .panel-titulo) */
+[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .panel-titulo),
+[data-testid="stVerticalBlockBorderWrapper"]:has(.panel-titulo) {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.18) !important;
+    border-radius: 14px;
+    backdrop-filter: blur(8px);
+}
+/* Botón deshabilitado (sin archivos): que se lea sobre el fondo */
+button[kind="primary"]:disabled, button[data-testid="stBaseButton-primary"]:disabled {
+    background: rgba(255,255,255,0.12) !important;
+    color: #c3cbe6 !important;
+    border: 1px solid rgba(255,255,255,0.30) !important;
+    opacity: 1 !important;
+}
+button[kind="primary"]:disabled *, button[data-testid="stBaseButton-primary"]:disabled * { color: #c3cbe6 !important; }
+.panel-titulo { color: #ffffff; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.2rem; }
+.panel-ayuda  { color: #c3cbe6; font-size: 0.82rem; margin-bottom: 0.4rem; }
+
+/* File uploader: zona blanca y archivos elegidos legibles */
+[data-testid="stFileUploaderDropzone"] { background: #ffffff; border-radius: 10px; }
+[data-testid="stFileUploaderFile"] {
+    background: #ffffff; border-radius: 8px; padding: 4px 10px; margin-top: 6px;
+}
+[data-testid="stFileUploaderFile"] * { color: #1b2140 !important; }
+[data-testid="stFileUploaderPagination"] * { color: #e0e6ff !important; }
+
+/* Spinner y textos sueltos de Streamlit sobre el fondo oscuro */
+[data-testid="stSpinner"] * { color: #e0e6ff !important; }
 
 /* Label del date_input */
-label { color: #a0a8c0 !important; font-size: 0.85rem !important; }
+label { color: #c3cbe6 !important; font-size: 0.85rem !important; }
 
 /* Sección subtítulo */
 .seccion-titulo {
@@ -1585,9 +1632,9 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 if todo_ok:
     st.markdown(f"""
-    <div style="background: rgba(18,153,107,0.15); border: 1px solid #12996B;
+    <div style="background: rgba(18,153,107,0.22); border: 1px solid #6CF5BC;
                 border-radius: 12px; padding: 0.9rem 1.2rem; margin-top: 0.5rem;">
-        <span style="color: #12996B; font-weight: 600; font-size: 0.95rem;">
+        <span style="color: #6CF5BC; font-weight: 600; font-size: 0.95rem;">
             ✅ Todas las tablas están al día hasta <b>{FECHA_FIN.date()}</b>.
         </span>
     </div>
@@ -1608,7 +1655,7 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     log_box = st.container()
     def log_msg(msg):
         log_box.markdown(f"""
-        <div style="background: rgba(255,255,255,0.07); border-left: 3px solid #0039AA;
+        <div style="background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
                     border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
                     color: #e0e6ff; font-size: 0.88rem; font-family: monospace;">
             {msg}
@@ -1729,37 +1776,122 @@ if st.button("Actualizar datos", type="primary", use_container_width=True):
     st.rerun()
 
 
-# ── Tab 10: subir Excel de Potencia Activa ────────────────────────────────────
+# ── Tab 10: Potencia Activa (Excel mensual que se sube a mano) ───────────────
 st.markdown('<div class="seccion-titulo">TAB 10 · POTENCIA ACTIVA (MEDIDORES)</div>', unsafe_allow_html=True)
-_mx_pa = _max_fecha_pg(POTENCIA_SHEET)
+
+_MES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun",
+              "jul", "ago", "set", "oct", "nov", "dic"]
+
+def _mes_txt(p: pd.Period) -> str:
+    return f"{_MES_CORTO[p.month - 1]}-{p.year}"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _dias_por_mes_potencia() -> dict:
+    """{'2024-12': días cargados} según POTENCIA_ACTIVA en Supabase."""
+    try:
+        con = _pg_con()
+        cur = con.cursor()
+        cur.execute(f'SELECT to_char("Fecha", \'YYYY-MM\'), COUNT(DISTINCT "Fecha") '
+                    f'FROM "{POTENCIA_SHEET}" GROUP BY 1')
+        res = dict(cur.fetchall())
+        con.close()
+        return res
+    except Exception:
+        return {}
+
+
+# El COES publica el Excel cuando termina el mes: lo esperado llega hasta el mes anterior
+_dias_pa = _dias_por_mes_potencia()
+_ultimo_esperado = (FECHA_FIN.to_period("M") - 1)
+_meses_esp = list(pd.period_range(FECHA_INICIO_INICIAL.to_period("M"), _ultimo_esperado, freq="M"))
+_meses_extra = sorted(pd.Period(k, "M") for k in _dias_pa if pd.Period(k, "M") > _ultimo_esperado)
+
+_fichas, _faltan, _incompletos = [], [], []
+for _p in _meses_esp + _meses_extra:
+    _n = _dias_pa.get(str(_p), 0)
+    if _n >= _p.days_in_month:
+        _cls = "pa-ok"
+    elif _n > 0:
+        _cls = "pa-inc"
+        _incompletos.append(_p)
+    else:
+        _cls = "pa-falta"
+        _faltan.append(_p)
+    _tip = f"{_n} de {_p.days_in_month} días" if _n else "sin cargar"
+    _fichas.append(f'<span class="pa-mes {_cls}" title="{_tip}">{_mes_txt(_p)}</span>')
+
+_cargados = [pd.Period(k, "M") for k in _dias_pa]
+_ultimo_cargado = max(_cargados) if _cargados else None
+_pendientes = len(_faltan) + len(_incompletos)
+
+if not _cargados:
+    _badge_pa = '<span class="badge-err">✕ Sin datos</span>'
+elif _pendientes == 0:
+    _badge_pa = f'<span class="badge-ok">✓ Al día hasta {_mes_txt(_ultimo_esperado)}</span>'
+else:
+    _badge_pa = f'<span class="badge-warn">Pendiente: {_pendientes} mes(es)</span>'
+
+_hasta_txt = (f"Cargado hasta: <b style='color:#ffffff'>{_mes_txt(_ultimo_cargado)}</b>"
+              if _ultimo_cargado else "Sin meses cargados")
+
 st.markdown(f"""
-<div class="card-estado">
-    <div>
-        <div class="card-tabla">{POTENCIA_SHEET}</div>
-        <div class="card-fecha">Excel mensual de medidores (solares y eólicas) · Último registro: {str(_mx_pa.date()) if _mx_pa else "sin datos"}</div>
+<div class="card-estado card-col">
+    <div class="card-cab">
+        <div>
+            <div class="card-tabla">{POTENCIA_SHEET}</div>
+            <div class="card-fecha">Tab 10 · Medidores de potencia activa (solares y eólicas) · {_hasta_txt}</div>
+        </div>
+        {_badge_pa}
     </div>
-    <span class="badge-ok">Se sube a mano</span>
+    <div class="pa-meses">{''.join(_fichas)}</div>
+    <div class="pa-leyenda">
+        <span class="pa-mes pa-ok">completo</span>&nbsp;
+        <span class="pa-mes pa-inc">incompleto</span>&nbsp;
+        <span class="pa-mes pa-falta">falta</span>
+        &nbsp;· Pasa el mouse sobre un mes para ver cuántos días tiene.
+    </div>
 </div>
 """, unsafe_allow_html=True)
-_archivos_pa = st.file_uploader(
-    "Sube uno o varios Excel de 'Registros de medidores ... potencia activa (MW)'",
-    type=["xlsx"], accept_multiple_files=True, key="uploader_potencia")
-if _archivos_pa and st.button("Subir Potencia Activa", use_container_width=True):
-    _partes = []
-    for _a in _archivos_pa:
-        try:
-            _d = leer_excel_potencia(_a.getvalue(), _a.name)
-            st.write(f"✓ {_a.name}: {_d['Fecha'].min()} → {_d['Fecha'].max()} · "
-                     f"{_d['Fecha'].nunique()} días · {_d['Central'].nunique()} centrales")
-            _partes.append(_d)
-        except Exception as _e:
-            st.error(f"✗ {_a.name}: {_e}")
+
+# Mensaje de la última subida (se guarda para mostrarlo después del rerun)
+if "pa_resultado" in st.session_state:
+    for _l in st.session_state.pop("pa_resultado"):
+        _cls = " err" if _l.startswith("✗") else ""
+        st.markdown(f'<div class="msg-linea{_cls}">{_l}</div>', unsafe_allow_html=True)
+
+with st.container(border=True):
+    st.markdown('<div class="panel-titulo">Subir Excel de Potencia Activa</div>'
+                '<div class="panel-ayuda">Archivo mensual del COES «Registros de medidores de generación '
+                'cada 15 minutos de potencia activa (MW)». Puedes subir varios meses a la vez; '
+                'si un mes ya estaba cargado, se reemplaza.</div>', unsafe_allow_html=True)
+    _archivos_pa = st.file_uploader(
+        "Excel de medidores", type=["xlsx"], accept_multiple_files=True,
+        key="uploader_potencia", label_visibility="collapsed")
+    _subir = st.button("Subir Potencia Activa", type="primary", use_container_width=True,
+                       disabled=not _archivos_pa)
+
+if _subir and _archivos_pa:
+    _lineas, _partes = [], []
+    with st.spinner("Leyendo los Excel…"):
+        for _a in _archivos_pa:
+            try:
+                _d = leer_excel_potencia(_a.getvalue(), _a.name)
+                _lineas.append(f"✓ {_a.name}: {_d['Fecha'].min()} → {_d['Fecha'].max()} · "
+                               f"{_d['Fecha'].nunique()} días · {_d['Central'].nunique()} centrales")
+                _partes.append(_d)
+            except Exception as _e:
+                _lineas.append(f"✗ {_a.name}: {_e}")
     if _partes:
         _df_pa = pd.concat(_partes, ignore_index=True).drop_duplicates(["Fecha", "Central"], keep="last")
         try:
-            _con = _pg_con()
-            _n = subir_potencia_pg(_df_pa, _con)
-            _con.close()
-            st.success(f"✅ {_n:,} filas subidas a POTENCIA_ACTIVA.")
+            with st.spinner("Subiendo a Supabase…"):
+                _con = _pg_con()
+                _n = subir_potencia_pg(_df_pa, _con)
+                _con.close()
+            _lineas.append(f"✅ {_n:,} filas subidas a POTENCIA_ACTIVA.")
         except Exception as _e:
-            st.error(f"No se pudo subir a Supabase: {_e}")
+            _lineas.append(f"✗ No se pudo subir a Supabase: {_e}")
+    st.session_state["pa_resultado"] = _lineas
+    _dias_por_mes_potencia.clear()
+    st.rerun()
