@@ -1795,9 +1795,9 @@ if _btn_actualizar:
         log_box = st.container()
         def log_msg(msg):
             log_box.markdown(f"""
-            <div style="background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
-                        border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
-                        color: #e0e6ff; font-size: 0.88rem; font-family: monospace;">
+            <div style="background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.55);
+                        border-radius: 10px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
+                        color: #ffffff; font-size: 0.88rem; font-family: monospace;">
                 {msg}
             </div>""", unsafe_allow_html=True)
 
