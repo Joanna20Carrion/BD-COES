@@ -1660,6 +1660,9 @@ else:
 st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 _btn_actualizar = st.button("Actualizar datos", type="primary", use_container_width=True)
 _zona_log = st.container()   # aquí sale el avance; el tab 10 se dibuja debajo sin esperar
+if "upd_resultado" in st.session_state:          # recuadro verde de la última actualización
+    _zona_log.markdown(f'<div class="msg-linea">{st.session_state.pop("upd_resultado")}</div>',
+                       unsafe_allow_html=True)
 
 
 # ── Tab 10: Potencia Activa (Excel mensual que se sube a mano) ───────────────
@@ -1911,6 +1914,8 @@ if _btn_actualizar:
 
         # ── Resumen final ─────────────────────────────────────────────────────────
         total_insertadas = sum(resumen.values())
-        st.success(f"✅ Actualización completada — {total_insertadas:,} filas nuevas en total.")
+        _msg_fin = f"✅ Actualización completada — {total_insertadas:,} filas nuevas en total."
+        st.markdown(f'<div class="msg-linea">{_msg_fin}</div>', unsafe_allow_html=True)
+        st.session_state["upd_resultado"] = _msg_fin   # se vuelve a mostrar después del rerun
         st.cache_data.clear()   # fuerza recarga de fechas al próximo refresh
         st.rerun()
