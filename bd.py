@@ -1516,8 +1516,9 @@ st.markdown("""
 .msg-linea.err { border-left-color: #FF9B9B; }
 
 /* Panel de subida del tab 10 (st.container con borde que contiene .panel-titulo) */
-[data-testid="stVerticalBlock"]:has(> [data-testid="stElementContainer"] .panel-titulo),
-[data-testid="stVerticalBlockBorderWrapper"]:has(.panel-titulo) {
+/* Solo el panel (no el bloque principal de la página, que también tiene envoltorio) */
+[data-testid="stVerticalBlockBorderWrapper"]:has(> div > [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] .panel-titulo),
+[data-testid="stVerticalBlock"]:not([data-testid="stVerticalBlockBorderWrapper"] > div > [data-testid="stVerticalBlock"]):has(> [data-testid="stElementContainer"] .panel-titulo) {
     background: rgba(255,255,255,0.06);
     border: 1px solid rgba(255,255,255,0.18) !important;
     border-radius: 14px;
@@ -1541,6 +1542,12 @@ button[kind="primary"]:disabled *, button[data-testid="stBaseButton-primary"]:di
 }
 [data-testid="stFileUploaderFile"] * { color: #1b2140 !important; }
 [data-testid="stFileUploaderPagination"] * { color: #e0e6ff !important; }
+
+/* Avisos de Streamlit (st.error / st.success / st.warning) legibles sobre el azul */
+[data-testid="stAlert"] * { color: #ffffff !important; }
+[data-testid="stAlert"] > div { background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.25); }
+[data-testid="stAlertContentError"] { border-left: 4px solid #FF9B9B; padding-left: 0.6rem; }
+[data-testid="stAlertContentSuccess"] { border-left: 4px solid #6CF5BC; padding-left: 0.6rem; }
 
 /* Spinner y textos sueltos de Streamlit sobre el fondo oscuro */
 [data-testid="stSpinner"] * { color: #e0e6ff !important; }
@@ -1651,129 +1658,8 @@ else:
 
 # ── Botón de actualización ────────────────────────────────────────────────────
 st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
-if st.button("Actualizar datos", type="primary", use_container_width=True):
-    log_box = st.container()
-    def log_msg(msg):
-        log_box.markdown(f"""
-        <div style="background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
-                    border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
-                    color: #e0e6ff; font-size: 0.88rem; font-family: monospace;">
-            {msg}
-        </div>""", unsafe_allow_html=True)
-
-    class _Log:
-        def write(self, msg): log_msg(msg)
-    log = _Log()
-    resumen = {}
-
-    with st.spinner("Conectando a Supabase…"):
-        try:
-            con = _pg_con()
-        except Exception as e:
-            st.error(f"No se pudo conectar a Supabase: {e}")
-            st.stop()
-
-    # ── DEMANDA ───────────────────────────────────────────────────────────────
-    mx_dem = max_fechas.get("DEMANDA")
-    inicio_dem = FECHA_INICIO_INICIAL if mx_dem is None else mx_dem   # incluye el último día guardado
-    if inicio_dem <= FECHA_FIN:
-        df_dem = procesar_demanda_rango(inicio_dem, FECHA_FIN, log)
-        n = _insertar_df_pg(df_dem, "DEMANDA", con)
-        resumen["DEMANDA"] = n
-        log.write(f"  → {n:,} filas insertadas en DEMANDA")
-    else:
-        log.write("DEMANDA ya está al día ✅")
-        resumen["DEMANDA"] = 0
-
-    # ── MOTIVOS / COSTOS / ÍNDICES ────────────────────────────────────────────
-    mx_m = max_fechas.get(MOTIVOS_SHEET)
-    mx_c = max_fechas.get(COSTOS_SHEET)
-    mx_i = max_fechas.get(INDICES_SHEET)
-    inicio_m = FECHA_INICIO_INICIAL if mx_m is None else mx_m   # incluye el último día
-    inicio_c = FECHA_INICIO_INICIAL if mx_c is None else mx_c
-    inicio_i = FECHA_INICIO_INICIAL if mx_i is None else mx_i
-    inicio_mci = min(inicio_m, inicio_c, inicio_i)
-
-    if inicio_mci <= FECHA_FIN:
-        df_m, df_c, df_i = tab2_procesar_rango(inicio_mci, FECHA_FIN, log)
-        nm = _insertar_df_pg(df_m, MOTIVOS_SHEET,  con)
-        nc = _insertar_df_pg(df_c, COSTOS_SHEET,   con)
-        ni = _insertar_df_pg(df_i, INDICES_SHEET,  con)
-        resumen[MOTIVOS_SHEET] = nm
-        resumen[COSTOS_SHEET]  = nc
-        resumen[INDICES_SHEET] = ni
-        log.write(f"  → Motivos: {nm:,} | Costos: {nc:,} | Índices: {ni:,} filas insertadas")
-    else:
-        log.write("Motivos/Costos/Índices ya están al día ✅")
-        resumen[MOTIVOS_SHEET] = resumen[COSTOS_SHEET] = resumen[INDICES_SHEET] = 0
-
-    # ── GENERACION ────────────────────────────────────────────────────────────
-    mx_gen = max_fechas.get(GENERACION_SHEET)
-    inicio_gen = FECHA_INICIO_INICIAL if mx_gen is None else mx_gen   # incluye el último día
-    if inicio_gen <= FECHA_FIN:
-        df_gen = tab3_procesar_rango(inicio_gen, FECHA_FIN, log)
-        ng = _insertar_df_pg(df_gen, GENERACION_SHEET, con)
-        resumen[GENERACION_SHEET] = ng
-        log.write(f"  → {ng:,} filas insertadas en GENERACION_RDO")
-    else:
-        log.write("GENERACION_RDO ya está al día ✅")
-        resumen[GENERACION_SHEET] = 0
-
-    # ── CMG (tab 4) ───────────────────────────────────────────────────────────
-    mx_cmg = max_fechas.get(CMG_SHEET)
-    inicio_cmg = FECHA_INICIO_INICIAL if mx_cmg is None else mx_cmg   # incluye el último día
-    if inicio_cmg <= FECHA_FIN:
-        df_cmg = tab4_procesar_rango(inicio_cmg, FECHA_FIN, log)
-        nc_ = _insertar_df_pg(df_cmg, CMG_SHEET, con)
-        resumen[CMG_SHEET] = nc_
-        log.write(f"  → {nc_:,} filas insertadas en CMG_RDO")
-    else:
-        log.write("CMG_RDO ya está al día ✅")
-        resumen[CMG_SHEET] = 0
-
-    # ── IEOD (tabs 5 y 6) ─────────────────────────────────────────────────────
-    mx_t = max_fechas.get(IEOD_TIPO_SHEET)
-    mx_a = max_fechas.get(IEOD_AREAS_SHEET)
-    inicio_t = FECHA_INICIO_INICIAL if mx_t is None else mx_t
-    inicio_a = FECHA_INICIO_INICIAL if mx_a is None else mx_a
-    inicio_ieod = min(inicio_t, inicio_a)          # incluye el último día guardado
-    if inicio_ieod <= FECHA_FIN:
-        df_t, df_a = tab56_procesar_rango(inicio_ieod, FECHA_FIN, log)
-        nt = _insertar_df_pg(df_t, IEOD_TIPO_SHEET, con)
-        _actualizar_columnas_g_areas(df_a, con)
-        na = _insertar_df_pg(df_a, IEOD_AREAS_SHEET, con)
-        resumen[IEOD_TIPO_SHEET] = nt
-        resumen[IEOD_AREAS_SHEET] = na
-        log.write(f"  → IEOD_TIPO_RECURSO: {nt:,} | IEOD_G_AREAS: {na:,} filas insertadas")
-    else:
-        log.write("IEOD ya está al día ✅")
-        resumen[IEOD_TIPO_SHEET] = resumen[IEOD_AREAS_SHEET] = 0
-
-    # ── TÉRMICAS POR CENTRAL (tabs 7 y 8) ─────────────────────────────────────
-    mx_ter = max_fechas.get(TERMICAS_SHEET)
-    if mx_ter is None:
-        # El histórico se carga con el script termicas_coes.py; aquí solo los últimos días
-        inicio_ter = max(FECHA_INICIO_INICIAL, FECHA_FIN - pd.Timedelta(days=2))
-        log.write("TERMICAS_RDO está vacía: se cargan solo los últimos 3 días "
-                  "(el histórico se sube con termicas_coes.py)")
-    else:
-        inicio_ter = mx_ter                          # incluye el último día guardado
-    if inicio_ter <= FECHA_FIN:
-        df_ter = tab78_procesar_rango(inicio_ter, FECHA_FIN, log)
-        nter = _insertar_df_pg(df_ter, TERMICAS_SHEET, con)
-        resumen[TERMICAS_SHEET] = nter
-        log.write(f"  → {nter:,} filas insertadas en TERMICAS_RDO")
-    else:
-        log.write("TERMICAS_RDO ya está al día ✅")
-        resumen[TERMICAS_SHEET] = 0
-
-    con.close()
-
-    # ── Resumen final ─────────────────────────────────────────────────────────
-    total_insertadas = sum(resumen.values())
-    st.success(f"✅ Actualización completada — {total_insertadas:,} filas nuevas en total.")
-    st.cache_data.clear()   # fuerza recarga de fechas al próximo refresh
-    st.rerun()
+_btn_actualizar = st.button("Actualizar datos", type="primary", use_container_width=True)
+_zona_log = st.container()   # aquí sale el avance; el tab 10 se dibuja debajo sin esperar
 
 
 # ── Tab 10: Potencia Activa (Excel mensual que se sube a mano) ───────────────
@@ -1868,8 +1754,10 @@ with st.container(border=True):
     _archivos_pa = st.file_uploader(
         "Excel de medidores", type=["xlsx"], accept_multiple_files=True,
         key="uploader_potencia", label_visibility="collapsed")
-    _subir = st.button("Subir Potencia Activa", type="primary", use_container_width=True,
-                       disabled=not _archivos_pa)
+    _subir = st.button("Subir Potencia Activa", type="primary", use_container_width=True)
+    if _subir and not _archivos_pa:
+        st.markdown('<div class="msg-linea err">Primero elige uno o más Excel con «Browse files».</div>',
+                    unsafe_allow_html=True)
 
 if _subir and _archivos_pa:
     _lineas, _partes = [], []
@@ -1895,3 +1783,130 @@ if _subir and _archivos_pa:
     st.session_state["pa_resultado"] = _lineas
     _dias_por_mes_potencia.clear()
     st.rerun()
+
+
+# ── Ejecución de la actualización (al final, para que el tab 10 ya esté en pantalla) ──
+if _btn_actualizar:
+    with _zona_log:
+        log_box = st.container()
+        def log_msg(msg):
+            log_box.markdown(f"""
+            <div style="background: rgba(255,255,255,0.10); border-left: 3px solid #6CF5BC;
+                        border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 0.4rem;
+                        color: #e0e6ff; font-size: 0.88rem; font-family: monospace;">
+                {msg}
+            </div>""", unsafe_allow_html=True)
+
+        class _Log:
+            def write(self, msg): log_msg(msg)
+        log = _Log()
+        resumen = {}
+
+        with st.spinner("Conectando a Supabase…"):
+            try:
+                con = _pg_con()
+            except Exception as e:
+                st.error(f"No se pudo conectar a Supabase: {e}")
+                st.stop()
+
+        # ── DEMANDA ───────────────────────────────────────────────────────────────
+        mx_dem = max_fechas.get("DEMANDA")
+        inicio_dem = FECHA_INICIO_INICIAL if mx_dem is None else mx_dem   # incluye el último día guardado
+        if inicio_dem <= FECHA_FIN:
+            df_dem = procesar_demanda_rango(inicio_dem, FECHA_FIN, log)
+            n = _insertar_df_pg(df_dem, "DEMANDA", con)
+            resumen["DEMANDA"] = n
+            log.write(f"  → {n:,} filas insertadas en DEMANDA")
+        else:
+            log.write("DEMANDA ya está al día ✅")
+            resumen["DEMANDA"] = 0
+
+        # ── MOTIVOS / COSTOS / ÍNDICES ────────────────────────────────────────────
+        mx_m = max_fechas.get(MOTIVOS_SHEET)
+        mx_c = max_fechas.get(COSTOS_SHEET)
+        mx_i = max_fechas.get(INDICES_SHEET)
+        inicio_m = FECHA_INICIO_INICIAL if mx_m is None else mx_m   # incluye el último día
+        inicio_c = FECHA_INICIO_INICIAL if mx_c is None else mx_c
+        inicio_i = FECHA_INICIO_INICIAL if mx_i is None else mx_i
+        inicio_mci = min(inicio_m, inicio_c, inicio_i)
+
+        if inicio_mci <= FECHA_FIN:
+            df_m, df_c, df_i = tab2_procesar_rango(inicio_mci, FECHA_FIN, log)
+            nm = _insertar_df_pg(df_m, MOTIVOS_SHEET,  con)
+            nc = _insertar_df_pg(df_c, COSTOS_SHEET,   con)
+            ni = _insertar_df_pg(df_i, INDICES_SHEET,  con)
+            resumen[MOTIVOS_SHEET] = nm
+            resumen[COSTOS_SHEET]  = nc
+            resumen[INDICES_SHEET] = ni
+            log.write(f"  → Motivos: {nm:,} | Costos: {nc:,} | Índices: {ni:,} filas insertadas")
+        else:
+            log.write("Motivos/Costos/Índices ya están al día ✅")
+            resumen[MOTIVOS_SHEET] = resumen[COSTOS_SHEET] = resumen[INDICES_SHEET] = 0
+
+        # ── GENERACION ────────────────────────────────────────────────────────────
+        mx_gen = max_fechas.get(GENERACION_SHEET)
+        inicio_gen = FECHA_INICIO_INICIAL if mx_gen is None else mx_gen   # incluye el último día
+        if inicio_gen <= FECHA_FIN:
+            df_gen = tab3_procesar_rango(inicio_gen, FECHA_FIN, log)
+            ng = _insertar_df_pg(df_gen, GENERACION_SHEET, con)
+            resumen[GENERACION_SHEET] = ng
+            log.write(f"  → {ng:,} filas insertadas en GENERACION_RDO")
+        else:
+            log.write("GENERACION_RDO ya está al día ✅")
+            resumen[GENERACION_SHEET] = 0
+
+        # ── CMG (tab 4) ───────────────────────────────────────────────────────────
+        mx_cmg = max_fechas.get(CMG_SHEET)
+        inicio_cmg = FECHA_INICIO_INICIAL if mx_cmg is None else mx_cmg   # incluye el último día
+        if inicio_cmg <= FECHA_FIN:
+            df_cmg = tab4_procesar_rango(inicio_cmg, FECHA_FIN, log)
+            nc_ = _insertar_df_pg(df_cmg, CMG_SHEET, con)
+            resumen[CMG_SHEET] = nc_
+            log.write(f"  → {nc_:,} filas insertadas en CMG_RDO")
+        else:
+            log.write("CMG_RDO ya está al día ✅")
+            resumen[CMG_SHEET] = 0
+
+        # ── IEOD (tabs 5 y 6) ─────────────────────────────────────────────────────
+        mx_t = max_fechas.get(IEOD_TIPO_SHEET)
+        mx_a = max_fechas.get(IEOD_AREAS_SHEET)
+        inicio_t = FECHA_INICIO_INICIAL if mx_t is None else mx_t
+        inicio_a = FECHA_INICIO_INICIAL if mx_a is None else mx_a
+        inicio_ieod = min(inicio_t, inicio_a)          # incluye el último día guardado
+        if inicio_ieod <= FECHA_FIN:
+            df_t, df_a = tab56_procesar_rango(inicio_ieod, FECHA_FIN, log)
+            nt = _insertar_df_pg(df_t, IEOD_TIPO_SHEET, con)
+            _actualizar_columnas_g_areas(df_a, con)
+            na = _insertar_df_pg(df_a, IEOD_AREAS_SHEET, con)
+            resumen[IEOD_TIPO_SHEET] = nt
+            resumen[IEOD_AREAS_SHEET] = na
+            log.write(f"  → IEOD_TIPO_RECURSO: {nt:,} | IEOD_G_AREAS: {na:,} filas insertadas")
+        else:
+            log.write("IEOD ya está al día ✅")
+            resumen[IEOD_TIPO_SHEET] = resumen[IEOD_AREAS_SHEET] = 0
+
+        # ── TÉRMICAS POR CENTRAL (tabs 7 y 8) ─────────────────────────────────────
+        mx_ter = max_fechas.get(TERMICAS_SHEET)
+        if mx_ter is None:
+            # El histórico se carga con el script termicas_coes.py; aquí solo los últimos días
+            inicio_ter = max(FECHA_INICIO_INICIAL, FECHA_FIN - pd.Timedelta(days=2))
+            log.write("TERMICAS_RDO está vacía: se cargan solo los últimos 3 días "
+                      "(el histórico se sube con termicas_coes.py)")
+        else:
+            inicio_ter = mx_ter                          # incluye el último día guardado
+        if inicio_ter <= FECHA_FIN:
+            df_ter = tab78_procesar_rango(inicio_ter, FECHA_FIN, log)
+            nter = _insertar_df_pg(df_ter, TERMICAS_SHEET, con)
+            resumen[TERMICAS_SHEET] = nter
+            log.write(f"  → {nter:,} filas insertadas en TERMICAS_RDO")
+        else:
+            log.write("TERMICAS_RDO ya está al día ✅")
+            resumen[TERMICAS_SHEET] = 0
+
+        con.close()
+
+        # ── Resumen final ─────────────────────────────────────────────────────────
+        total_insertadas = sum(resumen.values())
+        st.success(f"✅ Actualización completada — {total_insertadas:,} filas nuevas en total.")
+        st.cache_data.clear()   # fuerza recarga de fechas al próximo refresh
+        st.rerun()
