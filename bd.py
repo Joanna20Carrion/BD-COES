@@ -1504,6 +1504,21 @@ st.markdown("""
 .pa-inc   { background: rgba(252,225,34,0.25); color: #FFF6B0; border: 1px solid #FFE95C99; }
 .pa-falta { background: rgba(255,255,255,0.06); color: #c3cbe6; border: 1px dashed #c3cbe699; }
 .pa-leyenda { color: #c3cbe6; font-size: 0.78rem; margin-top: 0.5rem; }
+/* Detalle por mes plegable (cerrado por defecto) */
+.pa-detalle { margin-top: 0.7rem; margin-bottom: 0.6rem; }
+.pa-detalle summary {
+    cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px;
+    color: #ffffff; font-size: 0.82rem; font-weight: 600;
+    background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.45);
+    border-radius: 8px; padding: 3px 12px;
+}
+.pa-detalle summary::-webkit-details-marker { display: none; }
+.pa-detalle summary::before { content: "▸"; transition: transform 0.15s; }
+.pa-detalle[open] summary::before { transform: rotate(90deg); }
+.pa-detalle summary:hover { background: rgba(255,255,255,0.16); }
+.pa-detalle .txt-cerrar { display: none; }
+.pa-detalle[open] .txt-abrir { display: none; }
+.pa-detalle[open] .txt-cerrar { display: inline; }
 .card-col { display: block; }
 .card-col .card-cab { display: flex; justify-content: space-between; align-items: center; }
 
@@ -1523,6 +1538,7 @@ st.markdown("""
     border: 1px solid rgba(255,255,255,0.18) !important;
     border-radius: 14px;
     backdrop-filter: blur(8px);
+    padding: 1.3rem 1.4rem !important;
 }
 /* Botón deshabilitado (sin archivos): que se lea sobre el fondo */
 button[kind="primary"]:disabled, button[data-testid="stBaseButton-primary"]:disabled {
@@ -1532,8 +1548,11 @@ button[kind="primary"]:disabled, button[data-testid="stBaseButton-primary"]:disa
     opacity: 1 !important;
 }
 button[kind="primary"]:disabled *, button[data-testid="stBaseButton-primary"]:disabled * { color: #c3cbe6 !important; }
-.panel-titulo { color: #ffffff; font-weight: 700; font-size: 0.95rem; margin-bottom: 0.2rem; }
-.panel-ayuda  { color: #c3cbe6; font-size: 0.82rem; margin-bottom: 0.4rem; }
+.panel-titulo { margin-bottom: 0.4rem; }
+.panel-cab    { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel-nombre { color: #ffffff; font-weight: 700; font-size: 1.45rem; }
+.panel-info   { color: #c3cbe6; font-size: 0.85rem; margin-top: 0.5rem; }
+.panel-info b { color: #ffffff; }
 
 /* File uploader: zona blanca y archivos elegidos legibles */
 [data-testid="stFileUploaderDropzone"] { background: #ffffff; border-radius: 10px; }
@@ -1617,7 +1636,7 @@ for tabla in TABLAS:
     objetivo = FECHA_FIN - pd.Timedelta(days=1) if tabla in TABLAS_IEOD else FECHA_FIN
     dias_atraso = (objetivo - mx).days if mx else None
     if mx and mx >= objetivo:
-        badge = '<span class="badge-ok">✓ Al día</span>'
+        badge = '<span class="badge-ok">Al día</span>'
     elif mx:
         badge = f'<span class="badge-warn">Pendiente: {dias_atraso} día(s)</span>'
         todo_ok = False
@@ -1666,7 +1685,7 @@ if "upd_resultado" in st.session_state:          # recuadro verde de la última 
 
 
 # ── Tab 10: Potencia Activa (Excel mensual que se sube a mano) ───────────────
-st.markdown('<div class="seccion-titulo">POTENCIA ACTIVA (MEDIDORES)</div>', unsafe_allow_html=True)
+st.markdown('<div class="seccion-titulo">CARGA MANUAL</div>', unsafe_allow_html=True)
 
 _MES_CORTO = ["ene", "feb", "mar", "abr", "may", "jun",
               "jul", "ago", "set", "oct", "nov", "dic"]
@@ -1676,22 +1695,22 @@ def _mes_txt(p: pd.Period) -> str:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def _dias_por_mes_potencia() -> dict:
-    """{'2024-12': días cargados} según POTENCIA_ACTIVA en Supabase."""
+def _dias_por_mes_potencia() -> tuple:
+    """({'2024-12': días cargados}, última fecha) según POTENCIA_ACTIVA en Supabase."""
     try:
         con = _pg_con()
         cur = con.cursor()
-        cur.execute(f'SELECT to_char("Fecha", \'YYYY-MM\'), COUNT(DISTINCT "Fecha") '
+        cur.execute(f'SELECT to_char("Fecha", \'YYYY-MM\'), COUNT(DISTINCT "Fecha"), MAX("Fecha") '
                     f'FROM "{POTENCIA_SHEET}" GROUP BY 1')
-        res = dict(cur.fetchall())
+        filas = cur.fetchall()
         con.close()
-        return res
+        return {m: n for m, n, _ in filas}, (max(f for _, _, f in filas) if filas else None)
     except Exception:
-        return {}
+        return {}, None
 
 
 # El COES publica el Excel cuando termina el mes: lo esperado llega hasta el mes anterior
-_dias_pa = _dias_por_mes_potencia()
+_dias_pa, _max_pa = _dias_por_mes_potencia()
 _ultimo_esperado = (FECHA_FIN.to_period("M") - 1)
 _meses_esp = list(pd.period_range(FECHA_INICIO_INICIAL.to_period("M"), _ultimo_esperado, freq="M"))
 _meses_extra = sorted(pd.Period(k, "M") for k in _dias_pa if pd.Period(k, "M") > _ultimo_esperado)
@@ -1710,61 +1729,55 @@ for _p in _meses_esp + _meses_extra:
     _tip = f"{_n} de {_p.days_in_month} días" if _n else "sin cargar"
     _fichas.append(f'<span class="pa-mes {_cls}" title="{_tip}">{_mes_txt(_p)}</span>')
 
-_cargados = [pd.Period(k, "M") for k in _dias_pa]
-_ultimo_cargado = max(_cargados) if _cargados else None
 _pendientes = len(_faltan) + len(_incompletos)
-
-if not _cargados:
-    _badge_pa = '<span class="badge-err">✕ Sin datos</span>'
+if not _dias_pa:
+    _badge_pa = '<span class="badge-err">Sin datos</span>'
 elif _pendientes == 0:
-    _badge_pa = f'<span class="badge-ok">✓ Al día hasta {_mes_txt(_ultimo_esperado)}</span>'
+    _badge_pa = f'<span class="badge-ok">Al día hasta {_mes_txt(_ultimo_esperado)}</span>'
 else:
     _badge_pa = f'<span class="badge-warn">Pendiente: {_pendientes} mes(es)</span>'
 
-_hasta_txt = (f"Cargado hasta: <b style='color:#ffffff'>{_mes_txt(_ultimo_cargado)}</b>"
-              if _ultimo_cargado else "Sin meses cargados")
+_ultimo_txt = pd.Timestamp(_max_pa).strftime("%d/%m/%Y") if _max_pa else "sin datos"
 
-st.markdown(f"""
-<div class="card-estado card-col">
-    <div class="card-cab">
-        <div>
-            <div class="card-tabla">{POTENCIA_SHEET}</div>
-            <div class="card-fecha">Medidores de potencia activa (solares y eólicas) · {_hasta_txt}</div>
-        </div>
+with st.container(border=True):
+    # Encabezado del panel (mismo formato que "Despacho Ejecutado (IEOD - COES)")
+    st.markdown(f"""
+<div class="panel-titulo">
+    <div class="panel-cab">
+        <div class="panel-nombre">Potencia Activa (Medidores - COES)</div>
         {_badge_pa}
     </div>
-    <div class="pa-meses">{''.join(_fichas)}</div>
-    <div class="pa-leyenda">
-        <span class="pa-mes pa-ok">completo</span>&nbsp;
-        <span class="pa-mes pa-inc">incompleto</span>&nbsp;
-        <span class="pa-mes pa-falta">falta</span>
-        &nbsp;· Pasa el mouse sobre un mes para ver cuántos días tiene.
-    </div>
+    <div class="panel-info">Último dato en la base: <b>{_ultimo_txt}</b> · Tabla {POTENCIA_SHEET}, solares y eólicas</div>
+    <details class="pa-detalle">
+        <summary><span class="txt-abrir">Expandir vista por mes</span><span class="txt-cerrar">Contraer vista por mes</span></summary>
+        <div class="pa-meses">{''.join(_fichas)}</div>
+        <div class="pa-leyenda">
+            <span class="pa-mes pa-ok">completo</span>&nbsp;
+            <span class="pa-mes pa-inc">incompleto</span>&nbsp;
+            <span class="pa-mes pa-falta">falta</span>
+            &nbsp;· Pasa el mouse sobre un mes para ver cuántos días tiene.
+        </div>
+    </details>
 </div>
 """, unsafe_allow_html=True)
 
-# Mensaje de la última subida (se guarda para mostrarlo después del rerun)
-if "pa_resultado" in st.session_state:
-    _res = st.session_state.pop("pa_resultado")
-    _bien = [l for l in _res if not l.startswith("✗")]
-    _mal  = [l for l in _res if l.startswith("✗")]
-    if _bien:   # un solo recuadro verde, como el de "Todas las tablas están al día"
-        st.markdown(f'<div class="msg-linea">{"<br>".join(_bien)}</div>', unsafe_allow_html=True)
-    if _mal:    # y uno rojo con lo que falló
-        st.markdown(f'<div class="msg-linea err">{"<br>".join(_mal)}</div>', unsafe_allow_html=True)
-
-with st.container(border=True):
-    st.markdown('<div class="panel-titulo">Subir Excel de Potencia Activa</div>'
-                '<div class="panel-ayuda">Archivo mensual del COES «Registros de medidores de generación '
-                'cada 15 minutos de potencia activa (MW)». Puedes subir varios meses a la vez; '
-                'si un mes ya estaba cargado, se reemplaza.</div>', unsafe_allow_html=True)
     _archivos_pa = st.file_uploader(
-        "Excel de medidores", type=["xlsx"], accept_multiple_files=True,
-        key="uploader_potencia", label_visibility="collapsed")
+        "Excel mensual de medidores (puedes subir varios meses; si uno ya estaba cargado, se reemplaza)",
+        type=["xlsx"], accept_multiple_files=True, key="uploader_potencia")
     _subir = st.button("Subir Potencia Activa", type="primary", use_container_width=True)
     if _subir and not _archivos_pa:
         st.markdown('<div class="msg-linea err">Primero elige uno o más Excel con «Browse files».</div>',
                     unsafe_allow_html=True)
+
+    # Resultado de la última subida (se guarda para mostrarlo después del rerun)
+    if "pa_resultado" in st.session_state:
+        _res = st.session_state.pop("pa_resultado")
+        _bien = [l for l in _res if not l.startswith("✗")]
+        _mal  = [l for l in _res if l.startswith("✗")]
+        if _bien:   # un solo recuadro verde, como el de "Todas las tablas están al día"
+            st.markdown(f'<div class="msg-linea">{"<br>".join(_bien)}</div>', unsafe_allow_html=True)
+        if _mal:    # y uno rojo con lo que falló
+            st.markdown(f'<div class="msg-linea err">{"<br>".join(_mal)}</div>', unsafe_allow_html=True)
 
 if _subir and _archivos_pa:
     _lineas, _partes = [], []
