@@ -1497,6 +1497,16 @@ st.markdown("""
 .badge-err   { background: rgba(209,67,67,0.30);  color: #FF9B9B; border: 1px solid #FF9B9B88; }
 .badge-info  { background: rgba(140,175,255,0.22); color: #D6E2FF; border: 1px solid #D6E2FF66; }
 
+/* Página un poco más ancha para la matriz 3×3 de estados */
+[data-testid="stMainBlockContainer"], .block-container { max-width: 1100px; }
+.grid-estado { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 900px) { .grid-estado { grid-template-columns: 1fr; } }
+.card-estado.card-grid { display: block; margin-bottom: 0; padding: 0.9rem 1.1rem; }
+.card-grid .card-cab { display: flex; justify-content: space-between; align-items: center;
+                       gap: 8px; flex-wrap: wrap; margin-bottom: 0.35rem; }
+.card-grid .badge-ok, .card-grid .badge-warn, .card-grid .badge-err { margin-left: 0; }
+.card-grid .card-fecha { font-size: 0.8rem; line-height: 1.45; }
+
 /* Tab 10: meses cargados como fichas */
 .pa-meses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 0.6rem; }
 .pa-mes   { border-radius: 8px; padding: 2px 9px; font-size: 0.75rem; font-weight: 700; }
@@ -1630,6 +1640,7 @@ def _cargar_max_fechas():
 max_fechas = _cargar_max_fechas()
 
 todo_ok = True
+_tarjetas = []
 for tabla in TABLAS:
     mx = max_fechas.get(tabla)
     fecha_str = str(mx.date()) if mx else "sin datos"
@@ -1644,16 +1655,15 @@ for tabla in TABLAS:
         badge = '<span class="badge-err">✕ Sin datos</span>'
         todo_ok = False
 
-    st.markdown(f"""
-    <div class="card-estado">
-        <div>
-            <div class="card-tabla">{tabla}</div>
-            <div class="card-fecha">{DESCRIPCION.get(tabla, "")} · Último registro: {fecha_str}</div>
-        </div>
-        {badge}
-    </div>
-    """, unsafe_allow_html=True)
+    _tarjetas.append(
+        f'<div class="card-estado card-grid">'
+        f'<div class="card-cab"><div class="card-tabla">{tabla}</div>{badge}</div>'
+        f'<div class="card-fecha">{DESCRIPCION.get(tabla, "")}</div>'
+        f'<div class="card-fecha">Último registro: {fecha_str}</div>'
+        f'</div>')
 
+# Las 9 tarjetas en una matriz 3×3
+st.markdown(f'<div class="grid-estado">{"".join(_tarjetas)}</div>', unsafe_allow_html=True)
 st.markdown("<br>", unsafe_allow_html=True)
 
 if todo_ok:
