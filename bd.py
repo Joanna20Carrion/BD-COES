@@ -1584,6 +1584,9 @@ button[kind="primary"]:disabled *, button[data-testid="stBaseButton-primary"]:di
 /* Label del date_input */
 label { color: #c3cbe6 !important; font-size: 0.85rem !important; }
 
+/* Firma al pie */
+.firma-app { text-align: center; color: #c3cbe6; font-size: 0.82rem; margin: 2.5rem 0 1rem 0; }
+
 /* Sección subtítulo */
 .seccion-titulo {
     color: #c9d1f5;
@@ -1813,6 +1816,13 @@ if _subir and _archivos_pa:
     st.session_state["pa_resultado"] = _lineas
     _dias_por_mes_potencia.clear()
     st.rerun()
+
+
+# ── Firma al pie ──────────────────────────────────────────────────────────────
+from zoneinfo import ZoneInfo
+_ahora_lima = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M")
+st.markdown(f'<div class="firma-app">© BD Reprogramaciones COES · USGE · {_ahora_lima}</div>',
+            unsafe_allow_html=True)
 
 
 # ── Ejecución de la actualización (al final, para que el tab 10 ya esté en pantalla) ──
